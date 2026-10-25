@@ -62,13 +62,29 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
-log "5/6 install matching userspace driver (${DRV_VER})"
-pct push "$CTID" "$REPO/infra/provision/install-nvidia-userspace.sh" /opt/install-nvidia-userspace.sh --perms 0755
-pct exec "$CTID" -- bash /opt/install-nvidia-userspace.sh "$DRV_VER"
+log "5/6 install matching userspace driver by COPYING host libs (exact ${DRV_VER})"
+# NVIDIA's CUDA repo may have moved past the host's module version (seen: host 615.71.09 vs repo
+# 615.71.10) → apt gives a mismatched userspace ("NVML: Driver/library version mismatch"), and
+# libnvidia-ptxjitcompiler pulls the whole driver + DKMS. Copying the host's exact-version libs
+# guarantees a match with the loaded kernel module and needs no repo.
+# First strip any apt-installed nvidia bits (wrong version) from the container.
+pct exec "$CTID" -- bash -c '
+  export DEBIAN_FRONTEND=noninteractive
+  pkgs=$(dpkg -l 2>/dev/null | awk "/nvidia/{print \$2}")
+  [ -n "$pkgs" ] && apt-get purge -y -qq $pkgs >/dev/null 2>&1 || true
+  apt-get autoremove -y -qq >/dev/null 2>&1 || true
+  rm -f /etc/apt/sources.list.d/cuda*.list /usr/share/keyrings/cuda-archive-keyring.gpg 2>/dev/null || true'
+n=0
+for f in /usr/lib/x86_64-linux-gnu/*.so."${DRV_VER}"; do
+  [ -e "$f" ] || continue
+  pct push "$CTID" "$f" "$f" --perms 0644
+  n=$((n+1))
+done
+log "    copied ${n} driver libs at ${DRV_VER}"
+pct exec "$CTID" -- ldconfig   # recreates the SONAME links (libcuda.so.1, libnvidia-ml.so.1, ...)
 
 log "6/6 verify GPU in container"
-# Use the host's nvidia-smi binary (it only needs libnvidia-ml, which we just installed) — avoids pulling
-# the kernel-dependent driver package into the container just to check.
+# Use the host's nvidia-smi binary (it only needs libnvidia-ml, now copied in).
 pct push "$CTID" /usr/bin/nvidia-smi /usr/local/bin/nvidia-smi --perms 0755
 echo "----- nvidia-smi (inside CT ${CTID}) -----"
 pct exec "$CTID" -- /usr/local/bin/nvidia-smi || { echo "GPU NOT visible in container"; exit 1; }
