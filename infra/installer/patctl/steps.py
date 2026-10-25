@@ -10,7 +10,9 @@ from .host import Host
 
 ETC = "/etc/project-pat"
 TEMPLATE_STORAGE = "local"
-DISK_STORAGE = "local-zfs"
+# Option A (brownfield on existing PVE 9.2.2): guest disks live on the LVM-thin pool that the install
+# already uses, not a ZFS pool. See docs/adr/0010-option-a-brownfield-lvmthin.md.
+DISK_STORAGE = "local-lvm"
 
 
 # ---------------------------------------------------------------- guests
