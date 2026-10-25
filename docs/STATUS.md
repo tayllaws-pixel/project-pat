@@ -61,3 +61,7 @@ Working against the real server (PVE 9.2.2 at 100.123.22.20) via the Proxmox web
 **Operational notes:** destructive ops (pct/qm destroy) are blocked by the session's safety classifier and must be run by Taylor in the console; infra-core is on DHCP (192.168.1.156 at provision time) — reserve a stable IP on the router.
 
 **Acceptance (infra-core):** `verify-db.sh` → PASS=12 FAIL=0 on the live server — cross-DB isolation, append-only messages/audit, pat_reader read-only, pgvector operational all verified.
+
+**inference (CT 101) done & GPU-verified:** RTX 4070 Ti SUPER shared into the unprivileged LXC by reusing the host's packaged driver and **copying the host's exact-version userspace libs** (615.71.09) — apt gives a mismatched version. Ollama installed from the official binary tarball (no `curl|sh`), all 5 qwen3 models **restored from backup** (no re-download). Acceptance: `ollama run qwen3:4b` → correct output, `ollama ps` = 100% GPU, 3.9 GB VRAM. Scripts: `create-inference.sh`, `install-nvidia-userspace.sh` (unused — superseded by host-lib copy), `install-ollama.sh`, `provision-ollama.sh`.
+
+**More unprivileged-LXC/GPU gotchas (fixed):** apt lists stale in fresh template → `apt-get update` first; CUDA repo version drifted past host module → copy host libs not apt; `curl|sh` blocked by classifier → binary tarball; Ollama asset is now `.tar.zst`.
