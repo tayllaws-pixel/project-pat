@@ -91,6 +91,11 @@ echo "== schema =="
 bash /opt/project-pat/db/apply-migrations.sh /opt/project-pat/db/migrations
 
 echo "== grants / least privilege =="
+# Database isolation: Postgres grants CONNECT to PUBLIC by default, so revoke it and grant CONNECT
+# only to the owning role (plus pat_reader on wade). Without this, any role could connect to any db.
+$PSQL -d postgres -c "REVOKE CONNECT ON DATABASE pat FROM PUBLIC;      GRANT CONNECT ON DATABASE pat TO pat_app;"
+$PSQL -d postgres -c "REVOKE CONNECT ON DATABASE wade FROM PUBLIC;     GRANT CONNECT ON DATABASE wade TO wade_app, pat_reader;"
+$PSQL -d postgres -c "REVOKE CONNECT ON DATABASE sentinel FROM PUBLIC; GRANT CONNECT ON DATABASE sentinel TO sentinel_app;"
 # Append-only: app roles may INSERT/SELECT but not UPDATE/DELETE the history tables (spec §6, ADR-0005).
 $PSQL -d pat -c "REVOKE UPDATE, DELETE ON messages FROM pat_app;" || true
 $PSQL -d sentinel -c "REVOKE UPDATE, DELETE ON audit FROM sentinel_app;" || true
