@@ -10,11 +10,12 @@ if command -v ollama >/dev/null; then
 fi
 
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates >/dev/null
+apt-get install -y -qq curl ca-certificates zstd >/dev/null
 
-curl -fsSL https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tgz -o /tmp/ollama.tgz
-tar -C /usr -xzf /tmp/ollama.tgz          # -> /usr/bin/ollama and /usr/lib/ollama/*
-rm -f /tmp/ollama.tgz
+# Current Ollama Linux amd64 asset is a zstd tarball (includes the bundled CUDA runtime).
+curl -fsSL https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst -o /tmp/ollama.tar.zst
+tar --zstd -C /usr -xf /tmp/ollama.tar.zst   # -> /usr/bin/ollama and /usr/lib/ollama/*
+rm -f /tmp/ollama.tar.zst
 
 id ollama >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -U -m -d /usr/share/ollama ollama
 
