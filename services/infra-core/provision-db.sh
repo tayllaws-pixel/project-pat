@@ -91,16 +91,30 @@ echo "== schema =="
 bash /opt/project-pat/db/apply-migrations.sh /opt/project-pat/db/migrations
 
 echo "== grants / least privilege =="
-# Database isolation: Postgres grants CONNECT to PUBLIC by default, so revoke it and grant CONNECT
-# only to the owning role (plus pat_reader on wade). Without this, any role could connect to any db.
+# (1) CONNECT isolation: Postgres grants CONNECT to PUBLIC by default — revoke it so each role reaches
+#     only its own database (plus pat_reader on wade).
 $PSQL -d postgres -c "REVOKE CONNECT ON DATABASE pat FROM PUBLIC;      GRANT CONNECT ON DATABASE pat TO pat_app;"
 $PSQL -d postgres -c "REVOKE CONNECT ON DATABASE wade FROM PUBLIC;     GRANT CONNECT ON DATABASE wade TO wade_app, pat_reader;"
 $PSQL -d postgres -c "REVOKE CONNECT ON DATABASE sentinel FROM PUBLIC; GRANT CONNECT ON DATABASE sentinel TO sentinel_app;"
-# Append-only: app roles may INSERT/SELECT but not UPDATE/DELETE the history tables (spec §6, ADR-0005).
-$PSQL -d pat -c "REVOKE UPDATE, DELETE ON messages FROM pat_app;" || true
-$PSQL -d sentinel -c "REVOKE UPDATE, DELETE ON audit FROM sentinel_app;" || true
-# pat_reader: read-only on wade reporting tables for the infra map / 'what did Wade finish' queries.
-$PSQL -d wade -c "GRANT CONNECT ON DATABASE wade TO pat_reader;"
+
+# (2) Table/sequence privileges: migrations ran as the postgres superuser, so tables are owned by
+#     postgres. Give each app role full DML on its own database (plus future tables via default privs).
+grant_app() {  # role  db
+  $PSQL -d "$2" -c "GRANT USAGE, CREATE ON SCHEMA public TO $1;"
+  $PSQL -d "$2" -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO $1;"
+  $PSQL -d "$2" -c "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO $1;"
+  $PSQL -d "$2" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO $1;"
+  $PSQL -d "$2" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO $1;"
+}
+grant_app pat_app      pat
+grant_app wade_app     wade
+grant_app sentinel_app sentinel
+
+# (3) Append-only history (spec §6, ADR-0005): no UPDATE/DELETE on conversation messages or the audit chain.
+$PSQL -d pat      -c "REVOKE UPDATE, DELETE ON messages FROM pat_app;"
+$PSQL -d sentinel -c "REVOKE UPDATE, DELETE ON audit FROM sentinel_app;"
+
+# (4) pat_reader: read-only on wade reporting tables for the infra map / 'what did Wade finish today'.
 $PSQL -d wade -c "GRANT USAGE ON SCHEMA public TO pat_reader;"
 $PSQL -d wade -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO pat_reader;"
 $PSQL -d wade -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO pat_reader;"
