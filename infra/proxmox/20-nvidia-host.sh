@@ -23,7 +23,7 @@ blacklist nouveau
 options nouveau modeset=0
 EOT
   log "headers + build tools for running kernel $(uname -r)"
-  apt_install "proxmox-headers-$(uname -r)" build-essential dkms pve-headers pkg-config
+  apt_install "proxmox-headers-$(uname -r)" proxmox-default-headers build-essential dkms pkg-config
   local run="/var/lib/project-pat/NVIDIA-Linux-x86_64-${NVIDIA_VERSION}.run"
   [[ -f "$run" ]] || curl -fL "$RUNFILE_URL" -o "$run"
   chmod +x "$run"
@@ -57,7 +57,7 @@ EOT
     systemctl daemon-reload; systemctl enable nvidia-persistenced >/dev/null
   fi
   log "holding kernel packages until the kernel-upgrade runbook is used"
-  apt-mark hold proxmox-kernel-"$(uname -r | sed 's/-pve//')"* proxmox-default-kernel >/dev/null 2>&1 || apt-mark hold proxmox-default-kernel >/dev/null
+  apt-mark hold proxmox-default-kernel "proxmox-kernel-$(uname -r)" >/dev/null 2>&1 || apt-mark hold proxmox-default-kernel >/dev/null
   update-initramfs -u -k all >/dev/null 2>&1
   echo "$NVIDIA_VERSION" > "$PAT_ETC/nvidia-version"
   need_reboot
