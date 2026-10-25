@@ -1,0 +1,16 @@
+id = 103
+name = "wade"
+kind = "lxc"
+phase = 4
+template = "debian-13-standard"
+cores = 4
+cpuunits = 512
+memory = 6144
+swap = 0
+disk_gb = 60
+network = "lan"
+unprivileged = true
+features = ["nesting=1"]
+pool = "autonomous"
+tags = ["pat", "autonomous"]
+description = "Wade supervisor + workers. No Proxmox token, no sudo. Member of pool 'autonomous' so Sentinel can stop it."

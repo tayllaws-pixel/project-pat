@@ -1,0 +1,16 @@
+id = 101
+name = "inference"
+kind = "lxc"
+phase = 2
+template = "debian-13-standard"
+cores = 8
+cpuunits = 2048
+memory = 16384
+swap = 0
+disk_gb = 300
+network = "lan"
+unprivileged = true
+features = ["nesting=1"]
+gpu = true
+tags = ["pat", "gpu"]
+description = "Ollama + priority shim; owns the NVIDIA GPU via LXC device share (ADR-0001)"

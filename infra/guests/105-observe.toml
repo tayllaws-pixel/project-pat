@@ -1,0 +1,14 @@
+id = 105
+name = "observe"
+kind = "lxc"
+phase = 2
+template = "debian-13-standard"
+cores = 2
+cpuunits = 1024
+memory = 3072
+swap = 0
+disk_gb = 80
+network = "lan"
+unprivileged = true
+tags = ["pat", "monitoring"]
+description = "Prometheus, Grafana, Alertmanager"

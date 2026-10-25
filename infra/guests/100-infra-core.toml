@@ -1,0 +1,15 @@
+id = 100
+name = "infra-core"
+kind = "lxc"
+phase = 2
+template = "debian-13-standard"
+cores = 4
+cpuunits = 1024
+memory = 8192
+swap = 0
+disk_gb = 200
+network = "lan"
+unprivileged = true
+features = ["nesting=1"]
+tags = ["pat", "data"]
+description = "PostgreSQL 17 + pgvector; the only stateful service everything else depends on"

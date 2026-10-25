@@ -1,0 +1,305 @@
+{
+  "total": 58,
+  "by_status": {
+    "planned": 39,
+    "designed": 7,
+    "implemented": 8,
+    "tested": 4,
+    "deployed": 0,
+    "verified": 0
+  },
+  "percent_verified": 0.0,
+  "percent_tested_or_better": 6.9,
+  "items": [
+    {
+      "id": "PAT-001",
+      "task": "Requirements review, constraints, ADRs",
+      "status": "designed"
+    },
+    {
+      "id": "PAT-002",
+      "task": "BIOS/firmware checklist for Z890-ACE SE",
+      "status": "designed"
+    },
+    {
+      "id": "PAT-003",
+      "task": "Proxmox VE 9.x install procedure (ZFS)",
+      "status": "designed"
+    },
+    {
+      "id": "PAT-004",
+      "task": "Pre-wipe inventory & explicit confirmation gate",
+      "status": "implemented"
+    },
+    {
+      "id": "PAT-005",
+      "task": "Post-install hardening script",
+      "status": "implemented"
+    },
+    {
+      "id": "PAT-006",
+      "task": "Tailscale on host",
+      "status": "implemented"
+    },
+    {
+      "id": "PAT-007",
+      "task": "NVIDIA host driver (DKMS) + kernel hold",
+      "status": "implemented"
+    },
+    {
+      "id": "PAT-008",
+      "task": "Network bridges vmbr0/vmbr1 + LAB NAT + firewall",
+      "status": "implemented"
+    },
+    {
+      "id": "PAT-009",
+      "task": "ZFS ARC cap, local snapshot timers",
+      "status": "implemented"
+    },
+    {
+      "id": "PAT-010",
+      "task": "Host monitoring exporters (node, nvidia, smartctl, lm-sensors)",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-011",
+      "task": "Read-only preflight utility",
+      "status": "tested"
+    },
+    {
+      "id": "PAT-012",
+      "task": "`patctl` installer framework (plan/dry-run/install/verify/status/resume/repair/rollback/uninstall)",
+      "status": "tested"
+    },
+    {
+      "id": "PAT-013",
+      "task": "Phase 1 acceptance: CPU/RAM/storage/network/GPU/remote/recovery/security validated on real host",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-020",
+      "task": "Guest definitions (TOML) + creation steps",
+      "status": "implemented"
+    },
+    {
+      "id": "PAT-021",
+      "task": "infra-core: Postgres 17 + pgvector, roles per domain",
+      "status": "designed"
+    },
+    {
+      "id": "PAT-022",
+      "task": "DB schema v1 (conversations, memory, projects, tasks, jobs, approvals, audit)",
+      "status": "implemented"
+    },
+    {
+      "id": "PAT-023",
+      "task": "inference: Ollama in CT 101 with GPU, model manifest",
+      "status": "designed"
+    },
+    {
+      "id": "PAT-024",
+      "task": "Inference priority shim (foreground/background lanes)",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-025",
+      "task": "Shared schemas: events, tasks, approvals, status reports",
+      "status": "tested"
+    },
+    {
+      "id": "PAT-026",
+      "task": "Sentinel: e-stop (file+DB), approval issuance/verification, audit chain",
+      "status": "tested"
+    },
+    {
+      "id": "PAT-027",
+      "task": "Sentinel: scoped Proxmox API token + guest power control",
+      "status": "designed"
+    },
+    {
+      "id": "PAT-028",
+      "task": "Identity/auth for Pat (single admin, passkey or password+TOTP, revocable sessions)",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-029",
+      "task": "Basic monitoring stack in CT 105",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-030",
+      "task": "Notifications via ntfy (temporary)",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-031",
+      "task": "Secrets generation & distribution by installer",
+      "status": "designed"
+    },
+    {
+      "id": "PAT-034",
+      "task": "Model benchmark harness on real GPU",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-040",
+      "task": "Pat API skeleton (FastAPI)",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-041",
+      "task": "chat via router",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-042",
+      "task": "persistent history + search",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-043",
+      "task": "automatic memory extraction with provenance",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-044",
+      "task": "memory review/correct/delete UI",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-045",
+      "task": "projects + association",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-046",
+      "task": "approval inbox",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-047",
+      "task": "web app (PWA, iPhone-first)",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-048",
+      "task": "infrastructure map v1 (real data)",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-049",
+      "task": "file attachments",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-050",
+      "task": "Image Prompt Creator",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-060",
+      "task": "job queue + worker w/ checkpoints",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-061",
+      "task": "forge VM provisioning + podman",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-062",
+      "task": "plan\u2192code\u2192test loop",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-063",
+      "task": "independent validator",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-064",
+      "task": "deploy controller (Sentinel) + rollback",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-065",
+      "task": "three-consecutive-tasks",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-066",
+      "task": "bounded retries / reassessment after 3 failures",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-067",
+      "task": "external AI",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-070",
+      "task": "supervisor framework + synthetic supervisor",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-071",
+      "task": "native-app gateway decision",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-072",
+      "task": "voice",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-080",
+      "task": "Shuri",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-081",
+      "task": "Monk",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-082",
+      "task": "Eugene",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-083",
+      "task": "HAL",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-090",
+      "task": "AdGuard",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-091",
+      "task": "Jellyfin (iGPU)",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-092",
+      "task": "Frigate",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-093",
+      "task": "Pterodactyl",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-094",
+      "task": "Home Assistant",
+      "status": "planned"
+    },
+    {
+      "id": "PAT-100",
+      "task": "family accounts. All `planned`",
+      "status": "planned"
+    }
+  ]
+}

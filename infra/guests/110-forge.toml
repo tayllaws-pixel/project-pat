@@ -1,0 +1,15 @@
+id = 110
+name = "forge"
+kind = "vm"
+phase = 4
+image = "debian-13-genericcloud-amd64"
+cores = 6
+cpulimit = 6
+cpuunits = 512
+memory = 12288
+balloon = 4096
+disk_gb = 120
+network = "lab"
+pool = "autonomous"
+tags = ["pat", "autonomous", "sandbox"]
+description = "Wade's isolated build/test VM. LAB bridge only; firewall drops LAN + tailnet. Throttled by Sentinel under interactive load (ADR-0007)."

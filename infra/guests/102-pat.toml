@@ -1,0 +1,15 @@
+id = 102
+name = "pat"
+kind = "lxc"
+phase = 3
+template = "debian-13-standard"
+cores = 4
+cpuunits = 2048
+memory = 6144
+swap = 0
+disk_gb = 40
+network = "lan"
+unprivileged = true
+features = ["nesting=1"]
+tags = ["pat", "app"]
+description = "Pat API + web app"

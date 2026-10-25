@@ -1,0 +1,15 @@
+id = 104
+name = "sentinel"
+kind = "lxc"
+phase = 2
+template = "debian-13-standard"
+cores = 2
+cpuunits = 2048
+memory = 2048
+swap = 0
+disk_gb = 20
+network = "lan"
+unprivileged = true
+startup = "order=1"
+tags = ["pat", "safety"]
+description = "Independent safety plane: approvals, e-stop, deploy controller, scoped Proxmox token"

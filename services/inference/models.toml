@@ -1,0 +1,56 @@
+# Model roles and candidates (ADR-0006). Candidates are *to be benchmarked* (PAT-034) on the real GPU.
+# VRAM figures are planning estimates for Q4_K_M GGUF at 8k context and are replaced by measured values
+# in the benchmarks table. The first candidate per role is the default until a benchmark exists.
+
+[policy]
+vram_budget_mb = 15360        # leave ~1 GB of the 16 GB for CUDA context + display-less overhead
+max_large_resident = 2
+
+[roles.chat]
+metric = "quality"
+candidates = [
+  { name = "qwen3:8b",  vram_mb = 6200, context = 32768, notes = "default conversational; thinking mode toggleable" },
+  { name = "qwen3:14b", vram_mb = 10500, context = 32768, notes = "stronger; cannot co-reside with a coder model" },
+]
+
+[roles.reason]
+metric = "quality"
+candidates = [
+  { name = "qwen3:14b", vram_mb = 10500, context = 32768 },
+  { name = "qwen3:8b",  vram_mb = 6200,  context = 32768 },
+]
+
+[roles.code]
+metric = "accuracy"
+candidates = [
+  { name = "qwen2.5-coder:14b", vram_mb = 10200, context = 32768 },
+  { name = "qwen2.5-coder:7b",  vram_mb = 5600,  context = 32768 },
+  { name = "qwen3:14b",         vram_mb = 10500, context = 32768 },
+]
+
+[roles.classify]
+metric = "tokens_per_s"
+tier = "small"
+candidates = [
+  { name = "qwen3:4b",   vram_mb = 3200, context = 16384 },
+  { name = "qwen3:1.7b", vram_mb = 1600, context = 16384 },
+]
+
+[roles.embed]
+metric = "retrieval_ndcg"
+tier = "small"
+always_resident = true
+candidates = [
+  { name = "nomic-embed-text", vram_mb = 600, context = 8192, notes = "768-dim" },
+  { name = "bge-m3",           vram_mb = 1400, context = 8192, notes = "1024-dim, multilingual" },
+]
+
+[roles.vision]
+metric = "quality"
+candidates = [
+  { name = "qwen2.5vl:7b", vram_mb = 6800, context = 16384 },
+  { name = "llava:7b",     vram_mb = 5200, context = 4096 },
+]
+
+[pinned]
+# role = "model"   ← written by a recorded benchmark decision, never by hand
