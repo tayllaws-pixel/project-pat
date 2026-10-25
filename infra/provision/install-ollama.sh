@@ -12,7 +12,7 @@ fi
 apt-get update -qq
 apt-get install -y -qq curl ca-certificates >/dev/null
 
-curl -fsSL https://ollama.com/download/ollama-linux-amd64.tgz -o /tmp/ollama.tgz
+curl -fsSL https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tgz -o /tmp/ollama.tgz
 tar -C /usr -xzf /tmp/ollama.tgz          # -> /usr/bin/ollama and /usr/lib/ollama/*
 rm -f /tmp/ollama.tgz
 
