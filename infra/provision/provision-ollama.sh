@@ -6,19 +6,14 @@ set -euo pipefail
 CTID=101
 BACKUP="${BACKUP:-/var/lib/vz/ollama-backup}"
 ETC=/etc/project-pat
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 log(){ printf '[provision-ollama] %s\n' "$*"; }
 
 pct exec "$CTID" -- /usr/local/bin/nvidia-smi -L >/dev/null 2>&1 || { echo "GPU not verified in CT $CTID; run create-inference.sh first"; exit 1; }
 
-log "1/5 install Ollama"
-pct exec "$CTID" -- bash -c '
-  set -e
-  export DEBIAN_FRONTEND=noninteractive
-  if ! command -v ollama >/dev/null; then
-    apt-get update -qq
-    apt-get install -y -qq curl ca-certificates >/dev/null
-    curl -fsSL https://ollama.com/install.sh | sh
-  fi'
+log "1/5 install Ollama (official binary tarball, no pipe-to-shell)"
+pct push "$CTID" "$REPO/infra/provision/install-ollama.sh" /opt/install-ollama.sh --perms 0755
+pct exec "$CTID" -- bash /opt/install-ollama.sh
 
 log "2/5 stop ollama for restore"
 pct exec "$CTID" -- systemctl stop ollama 2>/dev/null || true
