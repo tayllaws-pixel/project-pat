@@ -6,6 +6,7 @@ set -e
 VER="${1:?usage: install-nvidia-userspace.sh <version, e.g. 615.71.09>}"
 export DEBIAN_FRONTEND=noninteractive
 
+apt-get update -qq        # template apt lists are stale → refresh before installing (avoids 404s)
 apt-get install -y -qq curl ca-certificates gnupg >/dev/null
 
 if [ ! -e /usr/share/keyrings/cuda-archive-keyring.gpg ]; then
