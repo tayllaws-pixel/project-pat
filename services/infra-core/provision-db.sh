@@ -11,6 +11,15 @@ export DEBIAN_FRONTEND=noninteractive
 LAN_CIDR="${LAN_CIDR:-192.168.1.0/24}"
 PG_MAJOR=17
 
+echo "== container prep (unprivileged-LXC fixes) =="
+# Self-contained so this script works whether or not prep-container.sh ran first (idempotent).
+chmod 755 /etc
+mkdir -p /etc/apt/apt.conf.d
+echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/10no-sandbox
+echo 'Acquire::ForceIPv4 "true";'  > /etc/apt/apt.conf.d/99force-ipv4
+grep -q '1.1.1.1' /etc/resolv.conf 2>/dev/null \
+  || printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions single-request\n' > /etc/resolv.conf
+
 echo "== installing PostgreSQL ${PG_MAJOR} + pgvector =="
 apt-get update -qq
 if ! apt-get install -y -qq "postgresql-${PG_MAJOR}" "postgresql-${PG_MAJOR}-pgvector" 2>/dev/null; then
@@ -26,6 +35,13 @@ if ! apt-get install -y -qq "postgresql-${PG_MAJOR}" "postgresql-${PG_MAJOR}-pgv
 fi
 apt-get install -y -qq sudo gawk >/dev/null 2>&1 || true
 
+echo "== ensure cluster exists =="
+# The default cluster is not always auto-created on a minimal image (locale / bootstrap timing).
+if ! pg_lsclusters -h 2>/dev/null | grep -qE "^${PG_MAJOR}[[:space:]]+main"; then
+  sed -i -E 's/^# *(en_US\.UTF-8 UTF-8)/\1/' /etc/locale.gen 2>/dev/null || true
+  locale-gen >/dev/null 2>&1 || true
+  pg_createcluster "${PG_MAJOR}" main --start
+fi
 systemctl enable --now postgresql >/dev/null 2>&1 || true
 
 CONF_DIR="/etc/postgresql/${PG_MAJOR}/main"

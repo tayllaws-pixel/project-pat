@@ -48,6 +48,7 @@ if ! pct config "$CTID" >/dev/null 2>&1; then
     --hostname "$NAME" --cores "$CORES" --cpuunits 1024 --memory "$MEM" --swap 0 \
     --rootfs "${DISK_STORAGE}:${DISK}" \
     --net0 "name=eth0,bridge=${BRIDGE},ip=dhcp,firewall=1" \
+    --nameserver "1.1.1.1 8.8.8.8" --searchdomain home.arpa \
     --unprivileged 1 --features nesting=1 --onboot 1 --start 0 \
     --tags "pat;data" --description "infra-core: PostgreSQL 17 + pgvector (Project PAT)"
   log "    created"
@@ -56,7 +57,9 @@ else
 fi
 pct status "$CTID" | grep -q running || pct start "$CTID"
 
-log "4/6 wait for container network"
+log "4/6 prep container + wait for network"
+pct push "$CTID" "$REPO/infra/provision/prep-container.sh" /opt/prep-container.sh --perms 0755
+pct exec "$CTID" -- bash /opt/prep-container.sh
 for _ in $(seq 1 30); do
   pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1 && break
   sleep 2

@@ -38,3 +38,24 @@ Updated: 2026-10-25 (session 1). Read this first when resuming.
 ZFS on the single NVMe with 8 GB ARC · Secure Boot off · forge is a VM on an isolated NAT bridge · Postgres as the
 only queue/store · Ollama first, benchmark before committing · Tailscale on host, no `tailscale ssh` ·
 hostname `pve.home.arpa` · LAB subnet 10.77.0.0/24 · guest IDs 100–110 reserved as listed.
+
+---
+
+## Build log — session 2 (2026-10-25, Option A on the live server)
+
+Working against the real server (PVE 9.2.2 at 100.123.22.20) via the Proxmox web console in the user's Chrome.
+
+**Done:**
+- Inventoried + preserved + **cleared the old ChatGPT stack** (CT100/101, VM102, ~15 `wade-*` host services). Models (19 GB) saved to `/var/lib/vz/ollama-backup`, code archived to `/var/lib/vz/old-stack`.
+- Repo pipeline live: GitHub `tayllaws-pixel/project-pat` (public) → cloned to `/opt/project-pat`. Update loop = push here, `git pull` on box.
+- **infra-core (CT 100) provisioned**: PostgreSQL 17 + pgvector, databases `pat`/`wade`/`sentinel` created with roles, schema v1 (14/5/8 tables), least-privilege grants. Host-side script `infra/provision/create-infra-core.sh`, in-CT `services/infra-core/provision-db.sh`, migration applier `db/apply-migrations.sh`.
+
+**Unprivileged-LXC gotchas found & fixed (now baked into `infra/provision/prep-container.sh` + provision-db.sh):**
+1. apt's `_apt` sandbox user can't resolve DNS → `APT::Sandbox::User "root"`.
+2. `/etc` ships as mode 0700 → non-root (postgres/_apt) can't read `/etc/passwd`; initdb failed "could not look up effective user ID". Fix: `chmod 755 /etc`.
+3. Default PG cluster not auto-created on minimal image → `pg_createcluster 17 main --start` (+ locale-gen).
+4. Flaky DHCP resolver + bad IPv6 path to mirrors → pin 1.1.1.1/8.8.8.8, force IPv4.
+
+**Next:** inference container (CT 101, Ollama + restore models), then Sentinel (CT 104).
+
+**Operational notes:** destructive ops (pct/qm destroy) are blocked by the session's safety classifier and must be run by Taylor in the console; infra-core is on DHCP (192.168.1.156 at provision time) — reserve a stable IP on the router.
