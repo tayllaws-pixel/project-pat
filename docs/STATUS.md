@@ -59,3 +59,5 @@ Working against the real server (PVE 9.2.2 at 100.123.22.20) via the Proxmox web
 **Next:** inference container (CT 101, Ollama + restore models), then Sentinel (CT 104).
 
 **Operational notes:** destructive ops (pct/qm destroy) are blocked by the session's safety classifier and must be run by Taylor in the console; infra-core is on DHCP (192.168.1.156 at provision time) — reserve a stable IP on the router.
+
+**Acceptance (infra-core):** `verify-db.sh` → PASS=12 FAIL=0 on the live server — cross-DB isolation, append-only messages/audit, pat_reader read-only, pgvector operational all verified.
