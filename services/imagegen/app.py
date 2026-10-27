@@ -23,9 +23,11 @@ Images are returned as raw PNG bytes; the caller owns storage and history.
 """
 import base64
 import io
+import json
 import os
 import threading
 import time
+import urllib.request
 from typing import Optional
 
 import torch
@@ -38,6 +40,11 @@ MODEL_ID = os.environ.get("IMAGEGEN_MODEL", "stabilityai/stable-diffusion-xl-bas
 MAX_STEPS = int(os.environ.get("IMAGEGEN_MAX_STEPS", "60"))
 MAX_DIM = int(os.environ.get("IMAGEGEN_MAX_DIM", "1280"))
 DTYPE = torch.float16
+
+# VRAM coordination: the GPU is shared with Ollama (inference) on one 16GB card. Before a render we
+# ask Ollama to unload its models so SDXL has room; after, we release our cache so chat can reload.
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "").rstrip("/")
+FREE_VRAM = os.environ.get("IMAGEGEN_FREE_VRAM", "1").lower() not in ("0", "false", "no")
 
 app = FastAPI(title="Pat ImageGen", version="0.1.0")
 
@@ -77,6 +84,65 @@ def _load():
         i2i = AutoPipelineForImage2Image.from_pipe(t2i)
         inpaint = AutoPipelineForInpainting.from_pipe(t2i)
         _t2i, _i2i, _inpaint, _loaded_at = t2i, i2i, inpaint, time.time()
+
+
+def _http_json(method: str, url: str, payload=None, timeout: float = 10.0):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method, headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read()
+    return json.loads(body) if body else {}
+
+
+def _free_ollama_vram():
+    """Best-effort: unload Ollama's loaded models so the GPU is free for a render."""
+    if not (FREE_VRAM and OLLAMA_URL):
+        return
+    try:
+        ps = _http_json("GET", f"{OLLAMA_URL}/api/ps", timeout=5)
+    except Exception:
+        return
+    freed = False
+    for m in (ps.get("models") or []):
+        name = m.get("name") or m.get("model")
+        if not name:
+            continue
+        try:
+            _http_json("POST", f"{OLLAMA_URL}/api/generate",
+                       {"model": name, "keep_alive": 0}, timeout=30)
+            freed = True
+        except Exception:
+            pass
+    if freed:
+        time.sleep(0.6)  # let the driver reclaim the freed VRAM
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _run(call):
+    """Serialise GPU work, free peer VRAM first, always release our cache after."""
+    with _lock:
+        _free_ollama_vram()
+        try:
+            return call()
+        except torch.cuda.OutOfMemoryError:
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=503,
+                detail="GPU out of memory — another model is using the card. Try again in a moment.",
+            )
+        finally:
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
 
 def _png(img: Image.Image) -> bytes:
@@ -190,16 +256,15 @@ def generate(r: GenReq):
     steps = max(1, min(MAX_STEPS, r.steps))
     w, h = _clamp_dim(r.width), _clamp_dim(r.height)
     t0 = time.time()
-    with _lock:
-        img = _t2i(
-            prompt=r.prompt,
-            negative_prompt=r.negative_prompt or None,
-            num_inference_steps=steps,
-            guidance_scale=r.guidance,
-            width=w,
-            height=h,
-            generator=_generator(r.seed),
-        ).images[0]
+    img = _run(lambda: _t2i(
+        prompt=r.prompt,
+        negative_prompt=r.negative_prompt or None,
+        num_inference_steps=steps,
+        guidance_scale=r.guidance,
+        width=w,
+        height=h,
+        generator=_generator(r.seed),
+    ).images[0])
     return Response(
         content=_png(img),
         media_type="image/png",
@@ -214,16 +279,15 @@ def img2img(r: Img2ImgReq):
     init = _decode_image(r.image)
     strength = max(0.05, min(1.0, r.strength))
     t0 = time.time()
-    with _lock:
-        img = _i2i(
-            prompt=r.prompt,
-            negative_prompt=r.negative_prompt or None,
-            image=init,
-            strength=strength,
-            num_inference_steps=steps,
-            guidance_scale=r.guidance,
-            generator=_generator(r.seed),
-        ).images[0]
+    img = _run(lambda: _i2i(
+        prompt=r.prompt,
+        negative_prompt=r.negative_prompt or None,
+        image=init,
+        strength=strength,
+        num_inference_steps=steps,
+        guidance_scale=r.guidance,
+        generator=_generator(r.seed),
+    ).images[0])
     return Response(
         content=_png(img),
         media_type="image/png",
@@ -239,17 +303,16 @@ def inpaint(r: InpaintReq):
     mask = _decode_mask(r.mask).resize(init.size)
     strength = max(0.05, min(1.0, r.strength))
     t0 = time.time()
-    with _lock:
-        img = _inpaint(
-            prompt=r.prompt,
-            negative_prompt=r.negative_prompt or None,
-            image=init,
-            mask_image=mask,
-            strength=strength,
-            num_inference_steps=steps,
-            guidance_scale=r.guidance,
-            generator=_generator(r.seed),
-        ).images[0]
+    img = _run(lambda: _inpaint(
+        prompt=r.prompt,
+        negative_prompt=r.negative_prompt or None,
+        image=init,
+        mask_image=mask,
+        strength=strength,
+        num_inference_steps=steps,
+        guidance_scale=r.guidance,
+        generator=_generator(r.seed),
+    ).images[0])
     return Response(
         content=_png(img),
         media_type="image/png",

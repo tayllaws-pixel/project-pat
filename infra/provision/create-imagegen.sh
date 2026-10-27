@@ -74,12 +74,17 @@ pct push "$CTID" "$REPO/infra/provision/install-imagegen.sh" /opt/install-imageg
 pct exec "$CTID" -- bash -c "IMAGEGEN_MODEL='${MODEL_ID}' HF_HOME=/opt/imagegen-cache bash /opt/install-imagegen.sh"
 
 log "7/8 deploy service + systemd"
+INFER_IP="$(pct exec 101 -- hostname -I | awk '{print $1}')"
+[ -n "$INFER_IP" ] || { echo "inference (101) must be running to resolve OLLAMA_URL"; exit 1; }
+log "    inference (Ollama) = ${INFER_IP}:11434"
 pct exec "$CTID" -- mkdir -p /opt/imagegen
 pct push "$CTID" "$REPO/services/imagegen/app.py" /opt/imagegen/app.py
 pct exec "$CTID" -- bash -c "cat > /etc/imagegen.env <<EOF
 IMAGEGEN_MODEL=${MODEL_ID}
 HF_HOME=/opt/imagegen-cache
 HF_HUB_DISABLE_TELEMETRY=1
+OLLAMA_URL=http://${INFER_IP}:11434
+IMAGEGEN_FREE_VRAM=1
 EOF"
 pct exec "$CTID" -- bash -c 'cat > /etc/systemd/system/imagegen.service <<EOF
 [Unit]
