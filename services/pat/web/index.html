@@ -83,6 +83,36 @@
   .memrow .del{flex:none;color:var(--muted);cursor:pointer;background:none;border:0;font-size:15px}
   .memrow .del:hover{color:#ff7b72}
   .memempty{color:var(--muted);text-align:center;padding:28px 12px;font-size:14px;line-height:1.6}
+  /* image studio */
+  .navbtn{margin:0 12px 10px;padding:9px 12px;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:10px;display:flex;gap:8px;align-items:center;justify-content:center;font-size:14px}
+  .navbtn:hover{border-color:var(--accent-2);color:var(--txt)}
+  .imgmodal .img-card{width:min(940px,95vw);max-height:90vh;background:var(--panel);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column}
+  .img-body{overflow:auto;padding:16px 18px}
+  .img-make{background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:18px}
+  .img-tabs{display:flex;gap:8px;margin-bottom:12px}
+  .itab{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:6px 12px;font-size:13px}
+  .itab.active{background:var(--accent-2);color:#dce7ff;border-color:var(--accent-2)}
+  .img-make textarea,.detail-body textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--txt);padding:10px 12px;outline:none;resize:vertical;font:inherit;margin-bottom:10px}
+  .img-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .img-controls select{font-size:13px}
+  button.primary{background:var(--accent);color:#0b1220;border:0;border-radius:9px;padding:9px 16px;font-weight:600}
+  button.primary:disabled{opacity:.45;cursor:default}
+  button.ghost,a.ghost{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:9px;padding:8px 14px;text-decoration:none;font-size:13px;cursor:pointer}
+  button.ghost:hover,a.ghost:hover{color:var(--txt);border-color:var(--accent-2)}
+  button.danger:hover{color:#ff7b72;border-color:#ff7b72}
+  .strength{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
+  .img-note{color:var(--muted);font-size:12.5px;margin-top:10px;min-height:16px}
+  .img-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:12px}
+  .tile{position:relative;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg);cursor:pointer;aspect-ratio:1}
+  .tile img{width:100%;height:100%;object-fit:cover;display:block}
+  .tile .badge{position:absolute;top:6px;left:6px;background:#000a;color:#cfe3ff;font-size:10px;padding:2px 6px;border-radius:6px}
+  .gal-empty{color:var(--muted);text-align:center;padding:30px;font-size:14px;grid-column:1/-1}
+  .detail-card{width:min(680px,95vw);max-height:92vh;background:var(--panel);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column}
+  .detail-body{overflow:auto;padding:16px 18px;display:flex;flex-direction:column;gap:10px}
+  .detail-body>img{width:100%;border-radius:10px;border:1px solid var(--line)}
+  .detail-prompt{font-size:14px;line-height:1.5}
+  .detail-meta{color:var(--muted);font-size:12px}
+  #editPreview img{max-width:100%;max-height:220px;border-radius:9px;border:1px solid var(--line);margin-bottom:10px}
   @media(max-width:720px){.app{grid-template-columns:1fr}aside{display:none}}
 </style>
 </head>
@@ -102,6 +132,7 @@
   <aside>
     <div class="brand"><span class="dot"></span> Pat</div>
     <button class="newbtn" id="newChat">+ New chat</button>
+    <button class="navbtn" id="imgBtn" style="display:none">🎨 Image studio</button>
     <div class="convos" id="convos"></div>
     <div class="side-foot"><span id="who"></span><span><a href="#" id="memBtn">Memory</a> · <a href="#" id="logout">Sign out</a></span></div>
   </aside>
@@ -125,6 +156,64 @@
   <div class="modal-card">
     <div class="modal-head"><b>What Pat remembers</b><a href="#" id="memClose">✕ Close</a></div>
     <div id="memList" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="imgModal" class="modal imgmodal" style="display:none">
+  <div class="img-card">
+    <div class="modal-head"><b>🎨 Image studio</b><a href="#" id="imgClose">✕ Close</a></div>
+    <div class="img-body">
+      <div class="img-make">
+        <div class="img-tabs">
+          <button class="itab active" data-tab="gen">Generate</button>
+          <button class="itab" data-tab="edit">Edit an image</button>
+        </div>
+        <div class="itab-pane" id="pane-gen">
+          <textarea id="imgPrompt" rows="3" placeholder="Describe the image you want…"></textarea>
+          <div class="img-controls">
+            <button id="imgEnhance" class="ghost">✨ Enhance prompt</button>
+            <select id="imgSize">
+              <option value="1024x1024">Square · 1024</option>
+              <option value="768x768">Square · 768 (faster)</option>
+              <option value="832x1216">Portrait</option>
+              <option value="1216x832">Landscape</option>
+            </select>
+            <button id="imgGen" class="primary">Generate</button>
+          </div>
+          <div class="img-note" id="genNote"></div>
+        </div>
+        <div class="itab-pane" id="pane-edit" style="display:none">
+          <input type="file" id="imgFile" accept="image/*">
+          <div id="editPreview"></div>
+          <textarea id="editPrompt" rows="2" placeholder="Describe the change…"></textarea>
+          <div class="img-controls">
+            <label class="strength">Change amount <input type="range" id="editStrength" min="0.2" max="0.9" step="0.05" value="0.6"></label>
+            <button id="editGo" class="primary">Transform</button>
+          </div>
+          <div class="img-note" id="editNote"></div>
+        </div>
+      </div>
+      <div class="img-gallery" id="imgGallery"></div>
+    </div>
+  </div>
+</div>
+
+<div id="imgDetail" class="modal" style="display:none">
+  <div class="detail-card">
+    <div class="modal-head"><b id="detailMode">Image</b><a href="#" id="detailClose">✕ Close</a></div>
+    <div class="detail-body">
+      <img id="detailImg" src="" alt="">
+      <div class="detail-prompt" id="detailPrompt"></div>
+      <div class="detail-meta" id="detailMeta"></div>
+      <textarea id="varPrompt" rows="2" placeholder="Make a variation — describe the change…"></textarea>
+      <div class="img-controls">
+        <label class="strength">Change amount <input type="range" id="varStrength" min="0.2" max="0.9" step="0.05" value="0.55"></label>
+        <button id="varGo" class="primary">Make variation</button>
+        <a id="detailDl" class="ghost" download>Download</a>
+        <button id="detailDel" class="ghost danger">Delete</button>
+      </div>
+      <div class="img-note" id="varNote"></div>
+    </div>
   </div>
 </div>
 
@@ -180,6 +269,7 @@ async function boot(){
   state.model = m.default || (m.models[0]||null);
   $('#model').onchange = e => state.model = e.target.value;
   await loadConvos();
+  initImages();
 }
 
 async function loadConvos(){
@@ -250,6 +340,99 @@ async function openMem(){
   $('#memList').innerHTML = d.memories.map(m=>`<div class="memrow"><div class="txt">${esc(m.content)}</div><button class="del" data-id="${m.id}" title="Forget this">🗑</button></div>`).join('');
   document.querySelectorAll('.memrow .del').forEach(b => b.onclick = async () => { await api('/api/memories/'+b.dataset.id,{method:'DELETE'}); openMem(); });
 }
+
+// --- image studio ---
+let galleryCache=[], editB64=null;
+async function initImages(){
+  try{ const c=await (await api('/api/images/config')).json(); $('#imgBtn').style.display = c.enabled?'flex':'none'; }
+  catch{ $('#imgBtn').style.display='none'; }
+}
+$('#imgBtn').onclick = ()=>{ $('#imgModal').style.display='grid'; loadGallery(); };
+$('#imgClose').onclick = e=>{ e.preventDefault(); $('#imgModal').style.display='none'; };
+$('#imgModal').onclick = e=>{ if(e.target.id==='imgModal') $('#imgModal').style.display='none'; };
+document.querySelectorAll('.itab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.itab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
+  $('#pane-gen').style.display = t.dataset.tab==='gen'?'block':'none';
+  $('#pane-edit').style.display = t.dataset.tab==='edit'?'block':'none';
+});
+
+$('#imgEnhance').onclick = async ()=>{
+  const d=$('#imgPrompt').value.trim(); if(!d) return;
+  $('#genNote').textContent='Enhancing…'; $('#imgEnhance').disabled=true;
+  try{
+    const r=await (await api('/api/images/prompt',{method:'POST',body:JSON.stringify({description:d,model:state.model})})).json();
+    $('#imgPrompt').value=r.prompt; $('#genNote').textContent='Prompt enhanced — tweak it or hit Generate.';
+  }catch{ $('#genNote').textContent='Could not enhance the prompt.'; }
+  finally{ $('#imgEnhance').disabled=false; }
+};
+
+$('#imgGen').onclick = async ()=>{
+  const p=$('#imgPrompt').value.trim(); if(!p) return;
+  const [w,h]=$('#imgSize').value.split('x').map(Number);
+  $('#imgGen').disabled=true; $('#imgEnhance').disabled=true;
+  $('#genNote').textContent='Rendering on the GPU… (~10–25s; the chat model is paused briefly to free VRAM)';
+  try{
+    const r=await api('/api/images/generate',{method:'POST',body:JSON.stringify({prompt:p,width:w,height:h})});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); $('#genNote').textContent='Error: '+(e.detail||r.status); return; }
+    const meta=await r.json(); $('#genNote').textContent='Done'+(meta.gen_seconds?(' in '+meta.gen_seconds+'s'):'')+'.';
+    await loadGallery(); openDetail(meta.id);
+  }catch(e){ $('#genNote').textContent='Error: '+e; }
+  finally{ $('#imgGen').disabled=false; $('#imgEnhance').disabled=false; }
+};
+
+$('#imgFile').onchange = e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const rd=new FileReader(); rd.onload=()=>{ editB64=rd.result; $('#editPreview').innerHTML='<img src="'+rd.result+'">'; }; rd.readAsDataURL(f);
+};
+$('#editGo').onclick = async ()=>{
+  const p=$('#editPrompt').value.trim();
+  if(!p||!editB64){ $('#editNote').textContent='Choose an image and describe the change.'; return; }
+  $('#editGo').disabled=true; $('#editNote').textContent='Transforming on the GPU… (~10–25s)';
+  try{
+    const r=await api('/api/images/edit',{method:'POST',body:JSON.stringify({image:editB64,prompt:p,strength:parseFloat($('#editStrength').value)})});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); $('#editNote').textContent='Error: '+(e.detail||r.status); return; }
+    const meta=await r.json(); $('#editNote').textContent='Done.'; await loadGallery(); openDetail(meta.id);
+  }catch(e){ $('#editNote').textContent='Error: '+e; }
+  finally{ $('#editGo').disabled=false; }
+};
+
+async function loadGallery(){
+  const d=await (await api('/api/images')).json(); galleryCache=d.images;
+  if(!d.images.length){ $('#imgGallery').innerHTML='<div class="gal-empty">No images yet. Describe something above and hit Generate.</div>'; return; }
+  $('#imgGallery').innerHTML=d.images.map(im=>`<div class="tile" data-id="${im.id}"><img loading="lazy" src="${im.url}"><span class="badge">${im.mode==='generate'?'gen':'edit'}</span></div>`).join('');
+  document.querySelectorAll('.tile').forEach(t=>t.onclick=()=>openDetail(t.dataset.id));
+}
+
+function openDetail(id){
+  const im=galleryCache.find(x=>x.id===id); if(!im) return;
+  $('#detailImg').src=im.url;
+  $('#detailMode').textContent = im.mode==='generate'?'Generated image':'Edited image';
+  $('#detailPrompt').textContent=im.prompt;
+  const bits=[]; if(im.width&&im.height) bits.push(im.width+'×'+im.height);
+  if(im.seed!=null) bits.push('seed '+im.seed); if(im.gen_seconds) bits.push(im.gen_seconds+'s');
+  if(im.source_prompt) bits.push('from your idea: “'+im.source_prompt+'”');
+  $('#detailMeta').textContent=bits.join(' · ');
+  $('#detailDl').href=im.url; $('#detailDl').setAttribute('download','pat-'+id+'.png');
+  $('#varPrompt').value=''; $('#varNote').textContent='';
+  $('#detailDel').dataset.id=id; $('#varGo').dataset.id=id;
+  $('#imgDetail').style.display='grid';
+}
+$('#detailClose').onclick=e=>{ e.preventDefault(); $('#imgDetail').style.display='none'; };
+$('#imgDetail').onclick=e=>{ if(e.target.id==='imgDetail') $('#imgDetail').style.display='none'; };
+$('#varGo').onclick = async ()=>{
+  const p=$('#varPrompt').value.trim(), sid=$('#varGo').dataset.id; if(!p) return;
+  $('#varGo').disabled=true; $('#varNote').textContent='Rendering variation… (~10–25s)';
+  try{
+    const r=await api('/api/images/edit',{method:'POST',body:JSON.stringify({source_id:sid,prompt:p,strength:parseFloat($('#varStrength').value)})});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); $('#varNote').textContent='Error: '+(e.detail||r.status); return; }
+    const meta=await r.json(); await loadGallery(); openDetail(meta.id);
+  }catch(e){ $('#varNote').textContent='Error: '+e; }
+  finally{ $('#varGo').disabled=false; }
+};
+$('#detailDel').onclick = async ()=>{
+  await api('/api/images/'+$('#detailDel').dataset.id,{method:'DELETE'});
+  $('#imgDetail').style.display='none'; loadGallery();
+};
 
 boot().catch(()=>showLogin());
 </script>

@@ -45,7 +45,10 @@ log "4/7 resolve peer IPs"
 INFRA_IP="$(pct exec 100 -- hostname -I | awk '{print $1}')"
 INFER_IP="$(pct exec 101 -- hostname -I | awk '{print $1}')"
 [ -n "$INFRA_IP" ] && [ -n "$INFER_IP" ] || { echo "infra-core (100) / inference (101) must be running"; exit 1; }
-log "    infra-core=${INFRA_IP}  inference=${INFER_IP}"
+# imagegen (CT 107) is optional — wire it in only if it's up; Pat hides images gracefully otherwise.
+IMAGEGEN_IP="$(pct exec 107 -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
+IMAGEGEN_URL=""; [ -n "$IMAGEGEN_IP" ] && IMAGEGEN_URL="http://${IMAGEGEN_IP}:8188"
+log "    infra-core=${INFRA_IP}  inference=${INFER_IP}  imagegen=${IMAGEGEN_IP:-<none>}"
 
 log "5/7 install python + deps"
 pct exec "$CTID" -- bash -c '
@@ -69,6 +72,8 @@ PAT_SESSION_SECRET=${PAT_SESSION_SECRET}
 PAT_ADMIN_USER=taylor
 PAT_ADMIN_PASSWORD=${PW}
 PAT_DEFAULT_MODEL=qwen3:8b
+IMAGEGEN_URL=${IMAGEGEN_URL}
+PAT_IMAGES_DIR=/opt/pat/images
 EOF
 chmod 600 /etc/pat.env"
 pct exec "$CTID" -- bash -c 'cat > /etc/systemd/system/pat.service <<EOF

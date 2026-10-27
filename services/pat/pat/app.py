@@ -7,6 +7,7 @@ approval inbox come later. Config is entirely from environment variables.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -41,6 +42,9 @@ EMBED_MODEL   = os.environ.get("PAT_EMBED_MODEL", "nomic-embed-text")
 EXTRACT_MODEL = os.environ.get("PAT_EXTRACT_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
 EMBED_DIM     = 1024          # storage width of memory_embeddings.embedding; nomic is 768 (zero-padded)
 MEM_TOPK      = int(os.environ.get("PAT_MEMORY_TOPK", "6"))
+IMAGEGEN_URL  = os.environ.get("IMAGEGEN_URL", "").rstrip("/")   # http://imagegen:8188; "" disables images
+IMAGES_DIR    = Path(os.environ.get("PAT_IMAGES_DIR", "/opt/pat/images"))
+IMG_MODEL_NAME = os.environ.get("PAT_IMAGE_MODEL", "stable-diffusion-xl")
 WEB_DIR      = Path(__file__).resolve().parent.parent / "web"
 
 pool = ConnectionPool(DB_DSN, min_size=1, max_size=8, kwargs={"row_factory": dict_row}, open=False)
@@ -97,6 +101,10 @@ def require_user(request: Request) -> dict:
 @app.on_event("startup")
 def _startup() -> None:
     pool.open()
+    try:
+        IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
     with pool.connection() as conn:
         conn.execute(
             "INSERT INTO users (username, display_name, role) VALUES (%s, %s, 'admin') "
@@ -351,6 +359,181 @@ async def chat(cid: str, request: Request, user: dict = Depends(require_user)):
                                  daemon=True).start()
 
     return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
+
+
+# ---------------------------------------------------------------- images (spec §23)
+_IMG_PROMPT_SYS = (
+    "You are an expert text-to-image prompt engineer for Stable Diffusion XL. Rewrite the user's idea as a "
+    "single vivid, detailed prompt: concrete subject, setting, lighting, composition, colour, style, and a "
+    "few quality terms. Keep it under 70 words. Output ONLY the finished prompt — no preamble, no quotes, no "
+    "explanation, no lists.")
+
+
+def _enhance_prompt(description: str, model: str) -> str:
+    """Image Prompt Creator: turn a plain idea into a detailed SDXL prompt using the local LLM."""
+    try:
+        r = httpx.post(f"{OLLAMA_URL}/api/generate",
+                       json={"model": model, "system": _IMG_PROMPT_SYS,
+                             "prompt": f"Idea: {description}\n\nImage prompt:",
+                             "stream": False, "think": False, "options": {"temperature": 0.7}},
+                       timeout=90)
+        r.raise_for_status()
+        text = re.sub(r"<think>.*?</think>", "", r.json().get("response", ""), flags=re.S)
+        text = text.strip().strip('"').strip()
+        return text or description
+    except Exception:
+        return description
+
+
+def _imagegen(path: str, payload: dict) -> tuple[bytes, float]:
+    """Call the image service; return (png_bytes, gen_seconds). Raises HTTPException on failure."""
+    if not IMAGEGEN_URL:
+        raise HTTPException(status_code=503, detail="image generation is not configured")
+    try:
+        r = httpx.post(f"{IMAGEGEN_URL}{path}", json=payload, timeout=300)
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        msg = e.response.text[:200] if e.response is not None else str(e)
+        code = e.response.status_code if e.response is not None else 502
+        raise HTTPException(status_code=code if code == 503 else 502, detail=f"image service: {msg}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"image service unreachable: {e}")
+    return r.content, float(r.headers.get("X-Gen-Seconds", 0) or 0)
+
+
+def _save_image(user_id, data: bytes, *, mode, prompt, source_prompt, negative, seed, steps,
+                guidance, width, height, gen_seconds, conversation_id=None, source_image_id=None) -> dict:
+    img_id = uuid.uuid4()
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    path = IMAGES_DIR / f"{img_id}.png"
+    path.write_bytes(data)
+    with pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO images (id,user_id,conversation_id,mode,prompt,source_prompt,negative_prompt,"
+            "seed,steps,guidance,width,height,model,source_image_id,file_path,bytes,gen_seconds) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (img_id, user_id, conversation_id, mode, prompt, source_prompt, negative, seed, steps,
+             guidance, width, height, IMG_MODEL_NAME, source_image_id, str(path), len(data), gen_seconds))
+        conn.commit()
+    return {"id": str(img_id), "url": f"/api/images/{img_id}/file", "mode": mode, "prompt": prompt,
+            "source_prompt": source_prompt, "seed": seed, "width": width, "height": height,
+            "source_image_id": str(source_image_id) if source_image_id else None,
+            "gen_seconds": round(gen_seconds, 1) if gen_seconds else None}
+
+
+@app.get("/api/images/config")
+def images_config(user: dict = Depends(require_user)):
+    return {"enabled": bool(IMAGEGEN_URL)}
+
+
+@app.post("/api/images/prompt")
+async def image_prompt(request: Request, user: dict = Depends(require_user)):
+    body = await request.json()
+    desc = (body.get("description") or "").strip()
+    if not desc:
+        raise HTTPException(status_code=400, detail="empty description")
+    return {"prompt": _enhance_prompt(desc, body.get("model") or DEFAULT_MODEL)}
+
+
+@app.post("/api/images/generate")
+async def image_generate(request: Request, user: dict = Depends(require_user)):
+    body = await request.json()
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="empty prompt")
+    source_prompt = None
+    if body.get("enhance"):
+        source_prompt = prompt
+        prompt = _enhance_prompt(prompt, body.get("model") or DEFAULT_MODEL)
+    steps = max(1, min(60, int(body.get("steps") or 28)))
+    width = int(body.get("width") or 1024)
+    height = int(body.get("height") or 1024)
+    seed = body.get("seed")
+    seed = int(seed) if seed not in (None, "") else None
+    negative = (body.get("negative_prompt") or "").strip() or None
+    payload = {"prompt": prompt, "steps": steps, "width": width, "height": height}
+    if seed is not None:
+        payload["seed"] = seed
+    if negative:
+        payload["negative_prompt"] = negative
+    data, secs = _imagegen("/generate", payload)
+    return _save_image(user["id"], data, mode="generate", prompt=prompt, source_prompt=source_prompt,
+                       negative=negative, seed=seed, steps=steps, guidance=None, width=width,
+                       height=height, gen_seconds=secs)
+
+
+@app.post("/api/images/edit")
+async def image_edit(request: Request, user: dict = Depends(require_user)):
+    """img2img: transform an existing image (by id) or an uploaded one (base64) with a new prompt."""
+    body = await request.json()
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="empty prompt")
+    strength = max(0.05, min(1.0, float(body.get("strength") or 0.6)))
+    steps = max(1, min(60, int(body.get("steps") or 30)))
+    source_image_id = None
+    b64 = body.get("image")
+    sid = body.get("source_id")
+    if sid:
+        try:
+            uuid.UUID(sid)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="not found")
+        with pool.connection() as conn:
+            row = conn.execute("SELECT file_path FROM images WHERE id=%s AND user_id=%s "
+                               "AND deleted_at IS NULL", (sid, user["id"])).fetchone()
+        if not row or not Path(row["file_path"]).exists():
+            raise HTTPException(status_code=404, detail="source image not found")
+        b64 = base64.b64encode(Path(row["file_path"]).read_bytes()).decode()
+        source_image_id = sid
+    if not b64:
+        raise HTTPException(status_code=400, detail="no source image")
+    data, secs = _imagegen("/img2img", {"prompt": prompt, "image": b64,
+                                        "strength": strength, "steps": steps})
+    return _save_image(user["id"], data, mode="img2img", prompt=prompt, source_prompt=None,
+                       negative=None, seed=None, steps=steps, guidance=None, width=None, height=None,
+                       gen_seconds=secs, source_image_id=source_image_id)
+
+
+@app.get("/api/images")
+def list_images(user: dict = Depends(require_user)):
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id,mode,prompt,source_prompt,seed,width,height,source_image_id,bytes,gen_seconds,"
+            "created_at FROM images WHERE user_id=%s AND deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 200", (user["id"],)).fetchall()
+    return {"images": [{"id": str(r["id"]), "url": f"/api/images/{r['id']}/file", "mode": r["mode"],
+                        "prompt": r["prompt"], "source_prompt": r["source_prompt"], "seed": r["seed"],
+                        "width": r["width"], "height": r["height"],
+                        "source_image_id": str(r["source_image_id"]) if r["source_image_id"] else None,
+                        "gen_seconds": float(r["gen_seconds"]) if r["gen_seconds"] else None,
+                        "created_at": r["created_at"].isoformat()} for r in rows]}
+
+
+@app.get("/api/images/{iid}/file")
+def image_file(iid: str, user: dict = Depends(require_user)):
+    try:
+        uuid.UUID(iid)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="not found")
+    with pool.connection() as conn:
+        row = conn.execute("SELECT file_path FROM images WHERE id=%s AND user_id=%s AND deleted_at IS NULL",
+                           (iid, user["id"])).fetchone()
+    if not row or not Path(row["file_path"]).exists():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(row["file_path"], media_type="image/png")
+
+
+@app.delete("/api/images/{iid}")
+def delete_image(iid: str, user: dict = Depends(require_user)):
+    try:
+        uuid.UUID(iid)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="not found")
+    with pool.connection() as conn:
+        conn.execute("UPDATE images SET deleted_at=now() WHERE id=%s AND user_id=%s", (iid, user["id"]))
+        conn.commit()
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- static UI
