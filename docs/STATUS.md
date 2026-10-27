@@ -68,3 +68,8 @@ Working against the real server (PVE 9.2.2 at 100.123.22.20) via the Proxmox web
 
 **Pat v0 (CT 102) LIVE & usable:** FastAPI backend (session-cookie login, conversations + messages in the pat DB, streaming chat from Ollama, model picker) + clean dark web UI. Deployed via `create-pat.sh`. End-to-end verified in-browser: login → chat → GPU response (qwen3:8b) → persisted history. Pat persona/system prompt added (identifies as Taylor's local assistant). Access: http://192.168.1.230:8080 on the LAN (login taylor / in secrets.env).
 Known v0 gaps: markdown not rendered in UI; remote/tailnet access needs the gateway container; memory-extraction/projects/approval-inbox and auth hardening are later.
+
+**Pat enhancements (session 3):**
+- Markdown rendering in the chat UI (bold/code/code-blocks/lists/headers/links).
+- **Persistent memory** (PAT-043/044): nomic-embed-text pulled; after each exchange a background thread uses qwen3:4b-instruct to extract durable facts → stored in memories/memory_versions with provenance + pgvector embedding (768 padded to 1024). On each message the query is embedded and top-k relevant memories are injected into the system prompt. `/api/memories` + a Memory panel to view/delete. Verified end-to-end: extracted 3 correct facts, recalled them in a fresh conversation, panel shows + deletes them.
+- Known refinements: no memory dedup yet; extraction quality is 4b-model level.
