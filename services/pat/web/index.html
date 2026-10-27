@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pat</title>
+<style>
+  :root{
+    --bg:#0e1117; --panel:#161b22; --panel-2:#1c2230; --line:#2a313c;
+    --txt:#e6edf3; --muted:#8b949e; --accent:#6ea8fe; --accent-2:#2b4b7d;
+    --user:#1f6feb22; --radius:14px; --maxw:760px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--txt);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  button{font:inherit;cursor:pointer}
+  .app{display:grid;grid-template-columns:260px 1fr;height:100dvh}
+  /* sidebar */
+  aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+  .brand{display:flex;align-items:center;gap:10px;padding:16px 16px 12px;font-weight:650;letter-spacing:.2px}
+  .brand .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent)}
+  .newbtn{margin:0 12px 10px;padding:10px 12px;border:1px solid var(--line);background:var(--panel-2);color:var(--txt);border-radius:10px;display:flex;gap:8px;align-items:center;justify-content:center}
+  .newbtn:hover{border-color:var(--accent-2)}
+  .convos{flex:1;overflow:auto;padding:4px 8px 12px}
+  .convo{padding:9px 10px;border-radius:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px;cursor:pointer}
+  .convo:hover{background:var(--panel-2);color:var(--txt)}
+  .convo.active{background:var(--panel-2);color:var(--txt)}
+  .side-foot{padding:10px 14px;border-top:1px solid var(--line);color:var(--muted);font-size:13px;display:flex;justify-content:space-between;align-items:center}
+  .side-foot a{color:var(--muted);text-decoration:none}
+  .side-foot a:hover{color:var(--txt)}
+  /* main */
+  main{display:flex;flex-direction:column;min-width:0}
+  .topbar{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line)}
+  select{background:var(--panel-2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+  .thread{flex:1;overflow:auto;padding:26px 18px}
+  .wrap{max-width:var(--maxw);margin:0 auto;display:flex;flex-direction:column;gap:22px}
+  .msg{display:flex;gap:14px}
+  .avatar{flex:none;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:13px;font-weight:650}
+  .msg.user .avatar{background:var(--accent-2);color:#dce7ff}
+  .msg.assistant .avatar{background:#20303f;color:var(--accent)}
+  .bubble{min-width:0;white-space:pre-wrap;word-wrap:break-word;padding-top:3px}
+  .msg.user .bubble{color:#eef2f7}
+  .cursor::after{content:"▍";color:var(--accent);animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .empty{height:100%;display:grid;place-items:center;color:var(--muted);text-align:center}
+  .empty h1{color:var(--txt);font-weight:650;font-size:22px;margin:0 0 6px}
+  /* composer */
+  .composer{padding:12px 18px 18px;border-top:1px solid var(--line)}
+  .composer .box{max-width:var(--maxw);margin:0 auto;display:flex;gap:10px;align-items:flex-end;background:var(--panel-2);border:1px solid var(--line);border-radius:14px;padding:8px 8px 8px 14px}
+  .composer textarea{flex:1;background:transparent;border:0;color:var(--txt);resize:none;max-height:180px;outline:none;font:inherit;padding:6px 0}
+  .send{flex:none;width:38px;height:38px;border-radius:10px;border:0;background:var(--accent);color:#0b1220;font-size:18px;display:grid;place-items:center}
+  .send:disabled{opacity:.4;cursor:default}
+  .hint{max-width:var(--maxw);margin:8px auto 0;color:var(--muted);font-size:12px;text-align:center}
+  /* login */
+  .login{position:fixed;inset:0;background:var(--bg);display:grid;place-items:center;z-index:10}
+  .card{width:320px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px}
+  .card h2{margin:0 0 4px;display:flex;align-items:center;gap:9px}
+  .card p{margin:0 0 18px;color:var(--muted);font-size:13px}
+  .card input{width:100%;margin-bottom:10px;background:var(--panel-2);border:1px solid var(--line);border-radius:9px;color:var(--txt);padding:10px 12px;outline:none}
+  .card input:focus{border-color:var(--accent-2)}
+  .card button{width:100%;padding:11px;border:0;border-radius:9px;background:var(--accent);color:#0b1220;font-weight:600}
+  .err{color:#ff7b72;font-size:13px;min-height:18px}
+  @media(max-width:720px){.app{grid-template-columns:1fr}aside{display:none}}
+</style>
+</head>
+<body>
+<div class="login" id="login">
+  <form class="card" id="loginForm">
+    <h2><span class="dot" style="width:10px;height:10px;border-radius:50%;background:var(--accent);display:inline-block"></span> Pat</h2>
+    <p>Sign in to your assistant</p>
+    <input id="u" placeholder="username" autocomplete="username" autofocus>
+    <input id="p" type="password" placeholder="password" autocomplete="current-password">
+    <div class="err" id="loginErr"></div>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+
+<div class="app" id="app" style="display:none">
+  <aside>
+    <div class="brand"><span class="dot"></span> Pat</div>
+    <button class="newbtn" id="newChat">+ New chat</button>
+    <div class="convos" id="convos"></div>
+    <div class="side-foot"><span id="who"></span><a href="#" id="logout">Sign out</a></div>
+  </aside>
+  <main>
+    <div class="topbar">
+      <select id="model"></select>
+      <span style="color:var(--muted);font-size:13px">GPU · local</span>
+    </div>
+    <div class="thread" id="thread"><div class="empty"><div><h1>How can I help, Taylor?</h1>Ask anything — it runs on your own server.</div></div></div>
+    <div class="composer">
+      <div class="box">
+        <textarea id="input" rows="1" placeholder="Message Pat…"></textarea>
+        <button class="send" id="send" title="Send">↑</button>
+      </div>
+      <div class="hint">Pat runs entirely on your hardware. Responses may be imperfect.</div>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = { cid:null, model:null, streaming:false };
+
+async function api(path, opts={}){
+  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  if(r.status===401){ showLogin(); throw new Error('unauth'); }
+  return r;
+}
+function esc(s){ return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function showLogin(){ $('#login').style.display='grid'; $('#app').style.display='none'; }
+function showApp(){ $('#login').style.display='none'; $('#app').style.display='grid'; }
+
+$('#loginForm').onsubmit = async e => {
+  e.preventDefault(); $('#loginErr').textContent='';
+  const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:$('#u').value.trim(), password:$('#p').value})});
+  if(r.ok){ await boot(); } else { $('#loginErr').textContent='Invalid username or password'; }
+};
+$('#logout').onclick = async e => { e.preventDefault(); await fetch('/api/logout',{method:'POST'}); showLogin(); };
+
+async function boot(){
+  try{ const me = await (await api('/api/me')).json(); $('#who').textContent = me.display_name; }
+  catch{ return; }
+  showApp();
+  const m = await (await api('/api/models')).json();
+  $('#model').innerHTML = m.models.map(x=>`<option ${x===m.default?'selected':''}>${x}</option>`).join('');
+  state.model = m.default || (m.models[0]||null);
+  $('#model').onchange = e => state.model = e.target.value;
+  await loadConvos();
+}
+
+async function loadConvos(){
+  const d = await (await api('/api/conversations')).json();
+  $('#convos').innerHTML = d.conversations.map(c =>
+    `<div class="convo ${c.id===state.cid?'active':''}" data-id="${c.id}">${esc(c.title)}</div>`).join('');
+  document.querySelectorAll('.convo').forEach(el => el.onclick = () => openConvo(el.dataset.id));
+}
+
+function clearThread(){ $('#thread').innerHTML=''; }
+function addMsg(role, content){
+  const wrap = $('#thread').querySelector('.wrap') || (()=>{ clearThread(); const w=document.createElement('div'); w.className='wrap'; $('#thread').appendChild(w); return w; })();
+  const el = document.createElement('div'); el.className='msg '+role;
+  el.innerHTML = `<div class="avatar">${role==='user'?'T':'P'}</div><div class="bubble"></div>`;
+  el.querySelector('.bubble').textContent = content;
+  wrap.appendChild(el); $('#thread').scrollTop = $('#thread').scrollHeight;
+  return el.querySelector('.bubble');
+}
+
+async function openConvo(id){
+  state.cid = id; await loadConvos(); clearThread();
+  const d = await (await api('/api/conversations/'+id)).json();
+  if(!d.messages.length){ $('#thread').innerHTML='<div class="empty"><div><h1>New chat</h1>Say hello.</div></div>'; return; }
+  d.messages.forEach(m => addMsg(m.role, m.content));
+}
+
+$('#newChat').onclick = async () => {
+  const c = await (await api('/api/conversations',{method:'POST',body:'{}'})).json();
+  state.cid = c.id; await loadConvos();
+  $('#thread').innerHTML='<div class="empty"><div><h1>New chat</h1>Say hello.</div></div>';
+  $('#input').focus();
+};
+
+const input = $('#input');
+input.addEventListener('input', () => { input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,180)+'px'; });
+input.addEventListener('keydown', e => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMsg(); } });
+$('#send').onclick = sendMsg;
+
+async function sendMsg(){
+  const text = input.value.trim();
+  if(!text || state.streaming) return;
+  if(!state.cid){ const c = await (await api('/api/conversations',{method:'POST',body:'{}'})).json(); state.cid=c.id; }
+  input.value=''; input.style.height='auto';
+  addMsg('user', text);
+  const bubble = addMsg('assistant',''); bubble.classList.add('cursor');
+  state.streaming=true; $('#send').disabled=true;
+  try{
+    const r = await fetch('/api/conversations/'+state.cid+'/chat',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({content:text, model:state.model})});
+    if(r.status===401){ showLogin(); return; }
+    const reader = r.body.getReader(); const dec = new TextDecoder(); let acc='';
+    while(true){ const {value,done} = await reader.read(); if(done) break;
+      acc += dec.decode(value,{stream:true}); bubble.textContent=acc; $('#thread').scrollTop=$('#thread').scrollHeight; }
+  }catch(e){ bubble.textContent += '\n\n[connection error]'; }
+  finally{ bubble.classList.remove('cursor'); state.streaming=false; $('#send').disabled=false; loadConvos(); }
+}
+
+boot().catch(()=>showLogin());
+</script>
+</body>
+</html>
