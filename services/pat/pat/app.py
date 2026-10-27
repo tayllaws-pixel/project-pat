@@ -29,6 +29,11 @@ SECRET       = os.environ["PAT_SESSION_SECRET"].encode()
 ADMIN_USER   = os.environ.get("PAT_ADMIN_USER", "taylor")
 ADMIN_PASS   = os.environ.get("PAT_ADMIN_PASSWORD", "")       # required to log in; set at provision time
 DEFAULT_MODEL = os.environ.get("PAT_DEFAULT_MODEL", "qwen3:8b")
+SYSTEM_PROMPT = os.environ.get("PAT_SYSTEM_PROMPT",
+    "You are Pat, a capable and professional personal assistant. You run entirely locally on Taylor's own "
+    "home server — a Proxmox machine with an NVIDIA RTX 4070 Ti SUPER GPU — so everything stays private on "
+    "his hardware; you are not a cloud service. Be helpful, clear, and concise, and honest about what you "
+    "don't know. When asked what you are, say you are Pat, Taylor's local assistant.")
 SESSION_TTL  = int(os.environ.get("PAT_SESSION_TTL", str(30 * 24 * 3600)))
 WEB_DIR      = Path(__file__).resolve().parent.parent / "web"
 
@@ -198,7 +203,8 @@ async def chat(cid: str, request: Request, user: dict = Depends(require_user)):
         history = conn.execute(
             "SELECT role, content FROM messages WHERE conversation_id=%s ORDER BY seq", (cid,)).fetchall()
 
-    ollama_messages = [{"role": r["role"], "content": r["content"]} for r in history]
+    ollama_messages = ([{"role": "system", "content": SYSTEM_PROMPT}] +
+                       [{"role": r["role"], "content": r["content"]} for r in history])
 
     def generate():
         assistant = []
