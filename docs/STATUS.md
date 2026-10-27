@@ -83,3 +83,5 @@ Known v0 gaps: markdown not rendered in UI; remote/tailnet access needs the gate
 - Known refinements: inpaint endpoint exists but has no mask-drawing UI yet; generation and chat still shouldn't run at the exact same instant (single user, fine); seed of random renders isn't captured back.
 
 **Remote access (session 4):** Pat is reachable off-LAN via **Tailscale Serve** on the host → `https://proxmox.taile950f6.ts.net` (tailnet-only, HTTPS, proxies to Pat at 192.168.1.230:8080). Root cause of "link didn't work on phone": the prior serve rule pointed at a stale container IP (192.168.1.233) — CT 102's DHCP lease had moved to .230. Repointed it; verified healthz=200 over the tailnet name. **Durability TODO:** CT 102 (hwaddr BC:24:11:3A:58:FB) is on DHCP so its IP can drift again and silently break the serve rule — needs a router DHCP reservation or a static IP (gw 192.168.1.1/24) on the container.
+
+**Update:** Resolved the drift risk — pinned CT 102 to a static `192.168.1.230/24` (gw 192.168.1.1) via `pct set -net0 ...ip=192.168.1.230/24`. Verified after reboot: static IP live, local healthz=200, tailnet healthz=200. Remote access is now stable.
