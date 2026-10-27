@@ -71,6 +71,18 @@
   .card input:focus{border-color:var(--accent-2)}
   .card button{width:100%;padding:11px;border:0;border-radius:9px;background:var(--accent);color:#0b1220;font-weight:600}
   .err{color:#ff7b72;font-size:13px;min-height:18px}
+  /* memory modal */
+  .modal{position:fixed;inset:0;background:#000a;display:grid;place-items:center;z-index:20}
+  .modal-card{width:min(560px,92vw);max-height:80vh;background:var(--panel);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column}
+  .modal-head{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line)}
+  .modal-head a{color:var(--muted);text-decoration:none;font-size:16px}
+  .modal-body{overflow:auto;padding:8px 12px}
+  .memrow{display:flex;gap:10px;align-items:center;padding:10px;border-radius:9px}
+  .memrow:hover{background:var(--panel-2)}
+  .memrow .txt{flex:1;font-size:14px}
+  .memrow .del{flex:none;color:var(--muted);cursor:pointer;background:none;border:0;font-size:15px}
+  .memrow .del:hover{color:#ff7b72}
+  .memempty{color:var(--muted);text-align:center;padding:28px 12px;font-size:14px;line-height:1.6}
   @media(max-width:720px){.app{grid-template-columns:1fr}aside{display:none}}
 </style>
 </head>
@@ -91,7 +103,7 @@
     <div class="brand"><span class="dot"></span> Pat</div>
     <button class="newbtn" id="newChat">+ New chat</button>
     <div class="convos" id="convos"></div>
-    <div class="side-foot"><span id="who"></span><a href="#" id="logout">Sign out</a></div>
+    <div class="side-foot"><span id="who"></span><span><a href="#" id="memBtn">Memory</a> · <a href="#" id="logout">Sign out</a></span></div>
   </aside>
   <main>
     <div class="topbar">
@@ -107,6 +119,13 @@
       <div class="hint">Pat runs entirely on your hardware. Responses may be imperfect.</div>
     </div>
   </main>
+</div>
+
+<div id="memModal" class="modal" style="display:none">
+  <div class="modal-card">
+    <div class="modal-head"><b>What Pat remembers</b><a href="#" id="memClose">✕ Close</a></div>
+    <div id="memList" class="modal-body"></div>
+  </div>
 </div>
 
 <script>
@@ -217,6 +236,19 @@ async function sendMsg(){
       acc += dec.decode(value,{stream:true}); bubble.innerHTML=md(acc); $('#thread').scrollTop=$('#thread').scrollHeight; }
   }catch(e){ bubble.innerHTML = md((bubble.textContent||'') + '\n\n[connection error]'); }
   finally{ bubble.classList.remove('cursor'); state.streaming=false; $('#send').disabled=false; loadConvos(); }
+}
+
+// --- memory panel ---
+$('#memBtn').onclick = async e => { e.preventDefault(); await openMem(); };
+$('#memClose').onclick = e => { e.preventDefault(); $('#memModal').style.display='none'; };
+$('#memModal').onclick = e => { if(e.target.id==='memModal') $('#memModal').style.display='none'; };
+async function openMem(){
+  $('#memModal').style.display='grid';
+  $('#memList').innerHTML='<div class="memempty">Loading…</div>';
+  const d = await (await api('/api/memories')).json();
+  if(!d.memories.length){ $('#memList').innerHTML='<div class="memempty">Pat hasn\'t learned anything yet.<br>Chat for a bit and it will start remembering durable facts about you.</div>'; return; }
+  $('#memList').innerHTML = d.memories.map(m=>`<div class="memrow"><div class="txt">${esc(m.content)}</div><button class="del" data-id="${m.id}" title="Forget this">🗑</button></div>`).join('');
+  document.querySelectorAll('.memrow .del').forEach(b => b.onclick = async () => { await api('/api/memories/'+b.dataset.id,{method:'DELETE'}); openMem(); });
 }
 
 boot().catch(()=>showLogin());
