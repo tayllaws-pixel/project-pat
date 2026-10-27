@@ -45,6 +45,8 @@ MEM_TOPK      = int(os.environ.get("PAT_MEMORY_TOPK", "6"))
 IMAGEGEN_URL  = os.environ.get("IMAGEGEN_URL", "").rstrip("/")   # http://imagegen:8188; "" disables images
 IMAGES_DIR    = Path(os.environ.get("PAT_IMAGES_DIR", "/opt/pat/images"))
 IMG_MODEL_NAME = os.environ.get("PAT_IMAGE_MODEL", "stable-diffusion-xl")
+SENTINEL_URL   = os.environ.get("SENTINEL_URL", "").rstrip("/")        # safety plane; "" disables the inbox
+SENTINEL_TOKEN = os.environ.get("SENTINEL_DECIDER_TOKEN", "")          # Pat holds the decider token
 WEB_DIR      = Path(__file__).resolve().parent.parent / "web"
 
 pool = ConnectionPool(DB_DSN, min_size=1, max_size=8, kwargs={"row_factory": dict_row}, open=False)
@@ -534,6 +536,60 @@ def delete_image(iid: str, user: dict = Depends(require_user)):
         conn.execute("UPDATE images SET deleted_at=now() WHERE id=%s AND user_id=%s", (iid, user["id"]))
         conn.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- safety / approvals (Sentinel proxy)
+# The logged-in human (require_user) acts through Pat, which holds Sentinel's decider token. This is the
+# "authenticated human" path for decisions and the e-stop; agents like Wade never get this token.
+def _sentinel(method: str, path: str, payload=None, timeout: float = 15):
+    if not SENTINEL_URL:
+        raise HTTPException(status_code=503, detail="safety plane not configured")
+    headers = {"Authorization": f"Bearer {SENTINEL_TOKEN}", "Content-Type": "application/json"}
+    try:
+        r = httpx.request(method, f"{SENTINEL_URL}{path}", headers=headers, json=payload, timeout=timeout)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"safety plane unreachable: {e}")
+    if r.status_code >= 400:
+        code = r.status_code if r.status_code in (401, 403, 404, 409, 423) else 502
+        raise HTTPException(status_code=code, detail=f"safety plane: {r.text[:200]}")
+    return r.json() if r.content else {}
+
+
+@app.get("/api/safety/config")
+def safety_config(user: dict = Depends(require_user)):
+    return {"enabled": bool(SENTINEL_URL)}
+
+
+@app.get("/api/safety/status")
+def safety_status(user: dict = Depends(require_user)):
+    return _sentinel("GET", "/status")
+
+
+@app.get("/api/approvals")
+def approvals_list(user: dict = Depends(require_user)):
+    return _sentinel("GET", "/approvals?status=open")
+
+
+@app.post("/api/approvals/{aid}/decide")
+async def approvals_decide(aid: str, request: Request, user: dict = Depends(require_user)):
+    body = await request.json()
+    dec = body.get("decision")
+    if dec not in ("approved", "denied"):
+        raise HTTPException(status_code=400, detail="decision must be 'approved' or 'denied'")
+    return _sentinel("POST", f"/approvals/{aid}/decide",
+                     {"decision": dec, "by": user["username"], "note": body.get("note", "")})
+
+
+@app.post("/api/estop/engage")
+async def estop_engage(request: Request, user: dict = Depends(require_user)):
+    body = await request.json() if await _has_body(request) else {}
+    return _sentinel("POST", "/estop/engage",
+                     {"by": user["username"], "reason": body.get("reason", "engaged from Pat")})
+
+
+@app.post("/api/estop/release")
+def estop_release(user: dict = Depends(require_user)):
+    return _sentinel("POST", "/estop/release", {"by": user["username"]})
 
 
 # ---------------------------------------------------------------- static UI

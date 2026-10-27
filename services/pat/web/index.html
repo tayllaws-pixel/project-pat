@@ -113,6 +113,19 @@
   .detail-prompt{font-size:14px;line-height:1.5}
   .detail-meta{color:var(--muted);font-size:12px}
   #editPreview img{max-width:100%;max-height:220px;border-radius:9px;border:1px solid var(--line);margin-bottom:10px}
+  /* approvals & safety */
+  .badge-count{display:none;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#d9534f;color:#fff;font-size:11px;line-height:18px;text-align:center;margin-left:7px;font-weight:600}
+  .estop-pill{font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line)}
+  .estop-ok{color:#3fb950;border-color:#2ea04366}
+  .estop-stopped{color:#ff7b72;border-color:#ff7b7266;background:#ff7b7215}
+  .safety-row{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px}
+  .btn-stop{background:#d9534f;color:#fff;border:0;border-radius:9px;padding:9px 18px;font-weight:700}
+  .btn-resume{background:#2ea043;color:#fff;border:0;border-radius:9px;padding:9px 16px;font-weight:600}
+  .appr{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;background:var(--panel-2)}
+  .appr h4{margin:0 0 4px;font-size:15px;font-family:ui-monospace,Menlo,monospace}
+  .appr .meta{color:var(--muted);font-size:12.5px;margin:2px 0}
+  .appr .acts{display:flex;gap:10px;margin-top:10px}
+  .appr-empty{color:var(--muted);text-align:center;padding:24px;font-size:14px;line-height:1.6}
   @media(max-width:720px){.app{grid-template-columns:1fr}aside{display:none}}
 </style>
 </head>
@@ -133,6 +146,7 @@
     <div class="brand"><span class="dot"></span> Pat</div>
     <button class="newbtn" id="newChat">+ New chat</button>
     <button class="navbtn" id="imgBtn" style="display:none">🎨 Image studio</button>
+    <button class="navbtn" id="apprBtn" style="display:none">🛡 Approvals<span id="apprBadge" class="badge-count"></span></button>
     <div class="convos" id="convos"></div>
     <div class="side-foot"><span id="who"></span><span><a href="#" id="memBtn">Memory</a> · <a href="#" id="logout">Sign out</a></span></div>
   </aside>
@@ -140,6 +154,7 @@
     <div class="topbar">
       <select id="model"></select>
       <span style="color:var(--muted);font-size:13px">GPU · local</span>
+      <span id="estopPill" class="estop-pill" style="display:none"></span>
     </div>
     <div class="thread" id="thread"><div class="empty"><div><h1>How can I help, Taylor?</h1>Ask anything — it runs on your own server.</div></div></div>
     <div class="composer">
@@ -194,6 +209,19 @@
         </div>
       </div>
       <div class="img-gallery" id="imgGallery"></div>
+    </div>
+  </div>
+</div>
+
+<div id="apprModal" class="modal" style="display:none">
+  <div class="modal-card" style="width:min(640px,94vw);max-height:85vh">
+    <div class="modal-head"><b>🛡 Approvals &amp; Safety</b><a href="#" id="apprClose">✕ Close</a></div>
+    <div class="modal-body">
+      <div class="safety-row">
+        <div id="safetyState">Checking…</div>
+        <button id="estopBtn" class="btn-stop">STOP</button>
+      </div>
+      <div id="apprList"></div>
     </div>
   </div>
 </div>
@@ -270,6 +298,7 @@ async function boot(){
   $('#model').onchange = e => state.model = e.target.value;
   await loadConvos();
   initImages();
+  initSafety();
 }
 
 async function loadConvos(){
@@ -432,6 +461,63 @@ $('#varGo').onclick = async ()=>{
 $('#detailDel').onclick = async ()=>{
   await api('/api/images/'+$('#detailDel').dataset.id,{method:'DELETE'});
   $('#imgDetail').style.display='none'; loadGallery();
+};
+
+// --- safety / approvals (Sentinel) ---
+let safetyEnabled=false, safetyTimer=null;
+async function initSafety(){
+  try{ const c=await (await api('/api/safety/config')).json(); safetyEnabled=!!c.enabled; }
+  catch{ safetyEnabled=false; }
+  $('#apprBtn').style.display = safetyEnabled?'flex':'none';
+  $('#estopPill').style.display = safetyEnabled?'inline-block':'none';
+  if(safetyEnabled){ refreshSafety(); if(safetyTimer) clearInterval(safetyTimer); safetyTimer=setInterval(refreshSafety,20000); }
+}
+async function refreshSafety(){
+  try{
+    const s = await (await api('/api/safety/status')).json();
+    const n = s.open_approvals||0;
+    const badge=$('#apprBadge'); badge.textContent=n; badge.style.display = n>0?'inline-block':'none';
+    const engaged = s.estop && s.estop.engaged;
+    const pill=$('#estopPill');
+    pill.textContent = engaged?'■ Autonomy STOPPED':'● Autonomy OK';
+    pill.className = 'estop-pill '+(engaged?'estop-stopped':'estop-ok');
+  }catch{}
+}
+$('#apprBtn').onclick = ()=>{ $('#apprModal').style.display='grid'; loadApprovals(); };
+$('#apprClose').onclick = e=>{ e.preventDefault(); $('#apprModal').style.display='none'; };
+$('#apprModal').onclick = e=>{ if(e.target.id==='apprModal') $('#apprModal').style.display='none'; };
+
+async function loadApprovals(){
+  let engaged=false;
+  try{ const s=await (await api('/api/safety/status')).json(); engaged = s.estop&&s.estop.engaged; }catch{}
+  const st=$('#safetyState'), btn=$('#estopBtn');
+  if(engaged){ st.innerHTML='<b style="color:#ff7b72">■ Emergency stop ENGAGED</b><br><span style="color:var(--muted);font-size:12.5px">All autonomous work is halted.</span>'; btn.textContent='RESUME'; btn.className='btn-resume'; }
+  else{ st.innerHTML='<b style="color:#3fb950">● Autonomy active</b><br><span style="color:var(--muted);font-size:12.5px">Wade may run approved work.</span>'; btn.textContent='STOP'; btn.className='btn-stop'; }
+  const d = await (await api('/api/approvals')).json();
+  const items = d.approvals||[];
+  if(!items.length){ $('#apprList').innerHTML='<div class="appr-empty">No pending requests.<br>When Wade needs your sign-off, it shows up here.</div>'; return; }
+  $('#apprList').innerHTML = items.map(a=>{
+    const cost = a.estimated_external_cost_usd>0 ? ' · ~$'+Number(a.estimated_external_cost_usd).toFixed(2) : '';
+    const aff = (a.affected||[]).join(', ');
+    return `<div class="appr"><h4>${esc(a.action)}</h4>`
+      + `<div class="meta">${esc(a.reason||'')}</div>`
+      + (aff?`<div class="meta">Affects: ${esc(aff)}</div>`:'')
+      + (a.consequences?`<div class="meta">${esc(a.consequences)}</div>`:'')
+      + `<div class="meta">from ${esc(a.requester||'')}${cost}</div>`
+      + `<div class="acts"><button class="btn-resume" data-id="${a.id}" data-dec="approved">Approve</button>`
+      + `<button class="ghost danger" data-id="${a.id}" data-dec="denied">Deny</button></div></div>`;
+  }).join('');
+  document.querySelectorAll('.appr .acts button').forEach(b=>b.onclick=async()=>{
+    b.disabled=true;
+    try{ await api('/api/approvals/'+b.dataset.id+'/decide',{method:'POST',body:JSON.stringify({decision:b.dataset.dec})}); }catch(e){}
+    loadApprovals(); refreshSafety();
+  });
+}
+$('#estopBtn').onclick = async ()=>{
+  const btn=$('#estopBtn'); const resuming = btn.textContent==='RESUME';
+  btn.disabled=true;
+  try{ await api(resuming?'/api/estop/release':'/api/estop/engage',{method:'POST',body:'{}'}); }catch(e){}
+  btn.disabled=false; loadApprovals(); refreshSafety();
 };
 
 boot().catch(()=>showLogin());
