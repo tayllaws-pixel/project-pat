@@ -704,10 +704,21 @@ async def voice_speak(request: Request, user: dict = Depends(require_user)):
     text = _plain_for_speech(body.get("text") or "")[:2000]
     if not text:
         raise HTTPException(status_code=400, detail="no text")
+    voice = _get_piper()
     buf = io.BytesIO()
     with _piper_lock:
-        with wave.open(buf, "wb") as wf:
-            _get_piper().synthesize(text, wf)
+        wf = wave.open(buf, "wb")
+        first = True
+        for ch in voice.synthesize(text):
+            if first:
+                wf.setnchannels(ch.sample_channels)
+                wf.setsampwidth(ch.sample_width)
+                wf.setframerate(ch.sample_rate)
+                first = False
+            wf.writeframes(ch.audio_int16_bytes)
+        wf.close()
+    if first:
+        raise HTTPException(status_code=500, detail="no audio produced")
     return Response(content=buf.getvalue(), media_type="audio/wav")
 
 
