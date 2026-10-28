@@ -52,6 +52,8 @@ SENTINEL_URL   = os.environ.get("SENTINEL_URL", "").rstrip("/")        # safety 
 SENTINEL_TOKEN = os.environ.get("SENTINEL_DECIDER_TOKEN", "")          # Pat holds the decider token
 DEPLOY_URL     = os.environ.get("DEPLOY_URL", "").rstrip("/")          # deploy controller; "" = no auto-ship
 DEPLOY_TOKEN   = os.environ.get("DEPLOY_CONTROLLER_TOKEN", "")
+WADE_URL       = os.environ.get("WADE_URL", "").rstrip("/")            # Wade control API; "" disables the Wade panel
+WADE_TOKEN     = os.environ.get("WADE_CONTROL_TOKEN", "")              # Pat holds Wade's control token
 VOICE_DIR      = Path(os.environ.get("PAT_VOICE_DIR", "/opt/pat/voice"))    # piper voice models live here
 WHISPER_MODEL  = os.environ.get("PAT_WHISPER_MODEL", "base")                # faster-whisper model size
 PIPER_VOICE    = os.environ.get("PAT_PIPER_VOICE", "en_US-amy-medium")      # Pat's speaking voice
@@ -865,6 +867,52 @@ async def voice_speak(request: Request, user: dict = Depends(require_user)):
     if first:
         raise HTTPException(status_code=500, detail="no audio produced")
     return Response(content=buf.getvalue(), media_type="audio/wav")
+
+
+# ---------------------------------------------------------------- Wade bridge (ask Pat -> Wade)
+# The authenticated human describes a change; Pat files it to Wade as a dev.implement job. Wade plans,
+# writes, and tests it, then raises a Sentinel approval that appears in the Approvals panel.
+def _wade(method: str, path: str, payload=None, timeout: float = 20):
+    if not WADE_URL:
+        raise HTTPException(status_code=503, detail="Wade is not configured")
+    try:
+        r = httpx.request(method, f"{WADE_URL}{path}",
+                          headers={"Authorization": f"Bearer {WADE_TOKEN}", "Content-Type": "application/json"},
+                          json=payload, timeout=timeout)
+        r.raise_for_status()
+        return r.json() if r.content else {}
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=f"wade: {e.response.text[:200]}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"wade unreachable: {e}")
+
+
+@app.get("/api/wade/config")
+def wade_config(user: dict = Depends(require_user)):
+    return {"enabled": bool(WADE_URL)}
+
+
+@app.get("/api/wade/status")
+def wade_status(user: dict = Depends(require_user)):
+    return _wade("GET", "/status")
+
+
+@app.get("/api/wade/jobs")
+def wade_jobs(user: dict = Depends(require_user)):
+    return _wade("GET", "/jobs?limit=20")
+
+
+@app.post("/api/wade/jobs")
+async def wade_create_job(request: Request, user: dict = Depends(require_user)):
+    body = await request.json()
+    instruction = (body.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(status_code=400, detail="describe the change you want Wade to make")
+    payload = {"instruction": instruction}
+    if body.get("files"):                       # optional: name the files explicitly
+        payload["files"] = body["files"]
+    return _wade("POST", "/jobs", {"kind": "dev.implement", "title": instruction[:80],
+                                   "payload": payload, "created_by": user["username"]})
 
 
 # ---------------------------------------------------------------- web push (PWA notifications)

@@ -168,6 +168,7 @@
     <button class="newbtn" id="newChat">+ New chat</button>
     <button class="navbtn" id="imgBtn" style="display:none">🎨 Image studio</button>
     <button class="navbtn" id="apprBtn" style="display:none">🛡 Approvals<span id="apprBadge" class="badge-count"></span></button>
+    <button class="navbtn" id="wadeBtn" style="display:none">🔧 Ask Wade</button>
     <div class="convos" id="convos"></div>
     <div class="side-foot"><span id="who"></span><span><a href="#" id="setBtn">Settings</a> · <a href="#" id="memBtn">Memory</a> · <a href="#" id="logout">Sign out</a></span></div>
   </aside>
@@ -231,6 +232,22 @@
           <button class="navbtn" id="tfDisConfirm" style="width:auto;display:none">Confirm turn off</button>
         </div>
       </section>
+    </div>
+  </div>
+</div>
+
+<div id="wadeModal" class="modal" style="display:none">
+  <div class="modal-card" style="width:min(640px,94vw);max-height:85vh">
+    <div class="modal-head"><b>🔧 Ask Wade to build something</b><a href="#" id="wadeClose">✕ Close</a></div>
+    <div class="modal-body" style="padding:16px 18px">
+      <p style="color:var(--muted);margin:0 0 10px;font-size:13px">Describe a change in plain language. Wade reads the codebase, writes it, tests it in isolation, and sends you an approval with the diffs before anything ships.</p>
+      <textarea id="wadeInput" rows="3" placeholder="e.g. Add the model name as a tooltip on Pat's model picker" style="width:100%;background:var(--panel-2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:10px;resize:vertical;font:inherit"></textarea>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+        <button class="navbtn" id="wadeSend" style="width:auto">Send to Wade</button>
+        <span id="wadeNote" style="font-size:13px"></span>
+      </div>
+      <h4 style="margin:18px 0 6px">Recent jobs</h4>
+      <div id="wadeJobs" style="font-size:13.5px"></div>
     </div>
   </div>
 </div>
@@ -385,6 +402,7 @@ async function boot(){
   initSafety();
   initVoice();
   initSettings();
+  initWade();
   // Deep link from a push notification (e.g. "approval needed" -> open the approvals panel)
   if(new URLSearchParams(location.search).get('view')==='approvals'){
     const b=$('#apprBtn'); if(b && b.style.display!=='none') b.click();
@@ -835,6 +853,44 @@ function initSettings(){
     const r=await api('/api/auth/2fa/disable',{method:'POST',body:JSON.stringify({code:$('#tfDisCode').value.trim()})});
     if(r.ok){ await refreshTfUI(); } else { $('#tfDisErr').textContent='Incorrect code.'; }
   };
+}
+
+// --- Wade bridge: describe a change, Wade builds it, approval returns to the panel ---
+let wadeEnabled=false, _wadeWired=false, wadeTimer=null;
+async function initWade(){
+  try{ const c=await (await api('/api/wade/config')).json(); wadeEnabled=!!c.enabled; }catch{ wadeEnabled=false; }
+  $('#wadeBtn').style.display = wadeEnabled?'flex':'none';
+  if(_wadeWired) return; _wadeWired=true;
+  const closeW=()=>{ $('#wadeModal').style.display='none'; if(wadeTimer){clearInterval(wadeTimer); wadeTimer=null;} };
+  $('#wadeBtn').onclick=()=>{ $('#wadeModal').style.display='grid'; loadWadeJobs(); if(wadeTimer)clearInterval(wadeTimer); wadeTimer=setInterval(loadWadeJobs,8000); };
+  $('#wadeClose').onclick=e=>{ e.preventDefault(); closeW(); };
+  $('#wadeModal').onclick=e=>{ if(e.target.id==='wadeModal') closeW(); };
+  $('#wadeSend').onclick=sendWade;
+}
+async function sendWade(){
+  const t=$('#wadeInput').value.trim(); if(!t) return;
+  const b=$('#wadeSend'), note=$('#wadeNote'); b.disabled=true; note.textContent='Filing job…'; note.style.color='var(--muted)';
+  try{
+    const r=await api('/api/wade/jobs',{method:'POST',body:JSON.stringify({instruction:t})});
+    if(r.ok){ $('#wadeInput').value=''; note.textContent='Sent — Wade is working. An approval will appear when it is ready.'; note.style.color='#3fb950'; }
+    else{ const e=await r.json().catch(()=>({})); note.textContent='Error: '+(e.detail||r.status); note.style.color='#ff7b72'; }
+  }catch(e){ note.textContent='Error: '+e; note.style.color='#ff7b72'; }
+  finally{ b.disabled=false; loadWadeJobs(); if(typeof refreshSafety==='function') refreshSafety(); }
+}
+function wadeStateLabel(s){
+  return ({queued:'⏳ queued',claimed:'⏳ starting',running:'⚙️ working',awaiting_approval:'🛡 awaiting your approval',
+           awaiting_validation:'⏳ validating',succeeded:'✓ done',needs_reassessment:'✗ needs attention',failed:'✗ failed'}[s])||s;
+}
+async function loadWadeJobs(){
+  let d; try{ d=await (await api('/api/wade/jobs')).json(); }catch{ return; }
+  const jobs=(d.jobs||[]).slice(0,12);
+  if(!jobs.length){ $('#wadeJobs').innerHTML='<span style="color:var(--muted)">No jobs yet.</span>'; return; }
+  $('#wadeJobs').innerHTML=jobs.map(j=>{
+    const err=(j.last_error && (j.state==='needs_reassessment'||j.state==='failed'))
+      ? `<div style="color:#ff7b72;font-size:12px;margin-top:2px">${esc(String(j.last_error).slice(0,160))}</div>`:'';
+    return `<div style="padding:7px 0;border-bottom:1px solid var(--line)"><b>${esc(j.title||j.kind)}</b>`
+         + `<div style="color:var(--muted);font-size:12.5px">${wadeStateLabel(j.state)}</div>${err}</div>`;
+  }).join('');
 }
 
 boot().catch(()=>showLogin());
