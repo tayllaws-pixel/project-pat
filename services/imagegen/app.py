@@ -177,6 +177,21 @@ def _clamp_dim(n: int) -> int:
     return (n // 8) * 8  # SDXL needs multiples of 8
 
 
+def _fit_sdxl(img: Image.Image, target: int = 1024) -> Image.Image:
+    """Resize so the longer side ~= target px, both dims multiples of 8 within [512, MAX_DIM], aspect
+    preserved. SDXL only behaves near ~1024px; feeding img2img a large/tall photo at its native size is
+    what produces duplicated faces and melted limbs. Editing must fit the input into this range first."""
+    w, h = img.size
+    scale = target / float(max(w, h))
+    nw = int(round(w * scale))
+    nh = int(round(h * scale))
+    nw = max(512, min(MAX_DIM, nw - nw % 8))
+    nh = max(512, min(MAX_DIM, nh - nh % 8))
+    if (nw, nh) == (w, h):
+        return img
+    return img.resize((nw, nh), Image.LANCZOS)
+
+
 def _generator(seed: Optional[int]):
     if seed is None:
         return None
@@ -276,7 +291,7 @@ def generate(r: GenReq):
 def img2img(r: Img2ImgReq):
     _load()
     steps = max(1, min(MAX_STEPS, r.steps))
-    init = _decode_image(r.image)
+    init = _fit_sdxl(_decode_image(r.image))
     strength = max(0.05, min(1.0, r.strength))
     t0 = time.time()
     img = _run(lambda: _i2i(
@@ -299,7 +314,7 @@ def img2img(r: Img2ImgReq):
 def inpaint(r: InpaintReq):
     _load()
     steps = max(1, min(MAX_STEPS, r.steps))
-    init = _decode_image(r.image)
+    init = _fit_sdxl(_decode_image(r.image))
     mask = _decode_mask(r.mask).resize(init.size)
     strength = max(0.05, min(1.0, r.strength))
     t0 = time.time()
