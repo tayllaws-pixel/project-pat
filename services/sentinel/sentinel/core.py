@@ -225,6 +225,7 @@ EXPLICIT_ACTIONS = {
     "purchase", "budget.exceed", "data.send_external", "infra.major_change", "permissions.modify",
     "db.migration_critical", "hardware.irreversible", "deploy.production", "guest.create", "guest.destroy",
     "model.replace_default", "estop.release",
+    "deploy.code", "infra.migrate", "infra.provision",   # code + infrastructure changes always need a human
 }
 
 

@@ -348,7 +348,129 @@ def dev_implement(job: dict, ctx: dict):
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- rung 6: infrastructure changes
+_MIG_SYS = ("You are writing a single PostgreSQL migration. Output ONLY SQL — no prose, no markdown fences. "
+            "Make it idempotent (CREATE TABLE IF NOT EXISTS, ADD COLUMN IF NOT EXISTS). When you create a "
+            "table, add a matching GRANT SELECT, INSERT, UPDATE, DELETE on it to the <db>_app role. Never "
+            "drop, delete, or truncate anything.")
+
+
+def _next_migration_version(work: str) -> str:
+    import glob
+    vers = [0]
+    for f in glob.glob(os.path.join(work, "db", "migrations", "*.sql")):
+        m = re.match(r"(\d{4})_", os.path.basename(f))
+        if m:
+            vers.append(int(m.group(1)))
+    return f"{max(vers) + 1:04d}"
+
+
+def infra_migrate(job: dict, ctx: dict):
+    """Generate a numbered DB migration from an instruction and request an infra.migrate approval."""
+    p = job.get("payload") or {}
+    db = p.get("db")
+    instruction = p.get("instruction")
+    if db not in ("pat", "wade", "sentinel"):
+        raise ValueError("payload.db must be pat, wade, or sentinel")
+    if not instruction:
+        raise ValueError("no instruction")
+    repo_url = p.get("repo_url") or ctx.get("repo_url")
+    base = p.get("base_branch", "main")
+    work = tempfile.mkdtemp(dir=ctx.get("work_root", "/tmp"))
+    try:
+        _git(["clone", "--depth", "1", "-b", base, repo_url, work], cwd="/")
+        import glob
+        ctxsql = ""
+        for f in sorted(glob.glob(os.path.join(work, "db", "migrations", "*.sql"))):
+            ctxsql += f"# {os.path.basename(f)}\n{open(f, encoding='utf-8').read()[:4000]}\n\n"
+        ver = _next_migration_version(work)
+        slug = re.sub(r"[^a-z0-9]+", "_", instruction.lower()).strip("_")[:40] or "change"
+        name = f"{ver}_{slug}.sql"
+        sql = _strip_fences(_llm(ctx, _MIG_SYS,
+                                 f"TARGET DATABASE: {db}\nTASK: {instruction}\n\n"
+                                 f"EXISTING SCHEMA (migrations so far):\n{ctxsql[:16000]}\n\n"
+                                 f"Output the SQL for the new migration now:"))
+        if len(sql) < 5:
+            raise ValueError("model returned empty SQL")
+        sql = f"-- {name}: {instruction}\n-- @db {db}\n{sql}"
+        if not sql.endswith("\n"):
+            sql += "\n"
+        b = sql.encode()
+        body = {"requester": {"kind": "supervisor", "id": ctx.get("actor_id", "wade")},
+                "action": "infra.migrate", "reason": instruction, "affected": [f"db:{db}/{name}"],
+                "consequences": f"Applies migration {name} to the {db} database.",
+                "validation_evidence": ["generated SQL — review it before approving"],
+                "rollback": "The migration runs in one transaction; any error rolls it back automatically.",
+                "payload": {"db": db, "migration_name": name, "migration_sql": sql,
+                            "migration_sha256": hashlib.sha256(b).hexdigest(),
+                            "allow_destructive": bool(p.get("allow_destructive"))}}
+        ar = httpx.post(f"{ctx['sentinel_url']}/approvals",
+                        headers={"Authorization": f"Bearer {ctx['requester_token']}"}, json=body, timeout=20)
+        ar.raise_for_status()
+        aid = ar.json().get("id")
+        return {"migration": name, "db": db, "approval_id": aid}, {"approval_id": aid}, "awaiting_approval"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+_SVC_SYS = ("You are writing a small self-contained Python web service using FastAPI. It runs in its own "
+            "container with NO credentials and NO access to any other service. Output ONLY the complete "
+            "contents of app.py — no prose, no markdown fences. It MUST define a FastAPI app named `app` and "
+            "expose GET /healthz returning {\"ok\": True}. Use only the standard library plus fastapi. Bind "
+            "host 0.0.0.0.")
+
+
+def infra_provision(job: dict, ctx: dict):
+    """Generate a small service and request an infra.provision approval to create its container."""
+    p = job.get("payload") or {}
+    name = (p.get("name") or "").strip()
+    instruction = p.get("instruction")
+    if not re.match(r"^[a-z][a-z0-9-]{1,30}$", name):
+        raise ValueError("payload.name must be a lowercase slug (a-z, 0-9, -)")
+    if not instruction:
+        raise ValueError("no instruction")
+    ctid = int(p.get("ctid", 130))
+    port = int(p.get("port", 8120))
+    deps = p.get("deps") or ["fastapi", "uvicorn[standard]"]
+    work = tempfile.mkdtemp(dir=ctx.get("work_root", "/tmp"))
+    try:
+        appcode = _strip_fences(_llm(ctx, _SVC_SYS,
+                                     f"SERVICE NAME: {name}\nPORT: {port}\nWHAT IT SHOULD DO: {instruction}\n\n"
+                                     f"Write app.py now (must include GET /healthz):"))
+        if len(appcode) < 20:
+            raise ValueError("model returned empty service code")
+        if not appcode.endswith("\n"):
+            appcode += "\n"
+        os.makedirs(os.path.join(work, name), exist_ok=True)
+        open(os.path.join(work, name, "app.py"), "w", encoding="utf-8").write(appcode)
+        summary, results = _forge_test(ctx, work, [{"path": f"{name}/app.py"}], None)
+        b = appcode.encode()
+        files = [{"path": "app.py", "content_b64": base64.b64encode(b).decode(),
+                  "sha256": hashlib.sha256(b).hexdigest()}]
+        exec_start = f"/opt/{name}-venv/bin/uvicorn app:app --host 0.0.0.0 --port {port}"
+        body = {"requester": {"kind": "supervisor", "id": ctx.get("actor_id", "wade")},
+                "action": "infra.provision", "reason": instruction, "affected": [f"service:{name}"],
+                "consequences": (f"Creates container CT {ctid} ({name}) listening on port {port} — "
+                                 f"unprivileged, no GPU, no credentials."),
+                "validation_evidence": [summary],
+                "rollback": "If the new service does not come up healthy, its container is destroyed.",
+                "payload": {"name": name, "ctid": ctid, "cores": int(p.get("cores", 1)),
+                            "memory_mb": int(p.get("memory_mb", 512)), "disk_gb": int(p.get("disk_gb", 8)),
+                            "port": port, "deps": deps, "files": files, "exec_start": exec_start,
+                            "healthz": "/healthz", "app_preview": appcode[:4000]}}
+        ar = httpx.post(f"{ctx['sentinel_url']}/approvals",
+                        headers={"Authorization": f"Bearer {ctx['requester_token']}"}, json=body, timeout=20)
+        ar.raise_for_status()
+        aid = ar.json().get("id")
+        return ({"service": name, "ctid": ctid, "port": port, "approval_id": aid},
+                {"approval_id": aid, "forge": results}, "awaiting_approval")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 HANDLERS = {
     "diagnostics.health": diagnostics_health,
     "dev.implement": dev_implement,
+    "infra.migrate": infra_migrate,
+    "infra.provision": infra_provision,
 }

@@ -619,6 +619,30 @@ function filesBlock(a){
     return `<details class="difff"><summary style="cursor:pointer;color:var(--accent);margin-top:6px">📄 ${esc(f.path)}${tag}</summary>${diff}</details>`;
   }).join('');
 }
+function codePre(text){
+  const s='margin:6px 0 0;padding:8px 10px;background:#0d1117;border:1px solid var(--line);border-radius:8px;'
+        +'overflow:auto;max-height:280px;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre';
+  return `<pre style="${s}">${esc(text||'')}</pre>`;
+}
+function payloadBlock(a){
+  const p=a.payload||{};
+  if(a.action==='infra.migrate'){
+    const warn = p.allow_destructive ? '<div style="color:#ff7b72;font-size:12px;margin-top:4px">⚠ approved as destructive</div>':'';
+    return `<details class="difff"><summary style="cursor:pointer;color:var(--accent);margin-top:6px">🗄 ${esc(p.migration_name||'migration')} → ${esc(p.db||'')} database</summary>${codePre(p.migration_sql)}</details>${warn}`;
+  }
+  if(a.action==='infra.provision'){
+    const spec=`CT ${esc(String(p.ctid))} · ${esc(p.name||'')} · port ${esc(String(p.port))} · ${esc(String(p.cores))} core / ${esc(String(p.memory_mb))}MB / ${esc(String(p.disk_gb))}GB · unprivileged, no credentials`;
+    const code = p.app_preview ? `<details class="difff"><summary style="cursor:pointer;color:var(--accent);margin-top:6px">📄 app.py (new service)</summary>${codePre(p.app_preview)}</details>`:'';
+    return `<div class="meta" style="margin-top:4px">${spec}</div>${code}`;
+  }
+  return filesBlock(a);
+}
+function approvalTitle(a){
+  if(a.action==='infra.migrate') return '🗄 database migration';
+  if(a.action==='infra.provision') return '📦 new service: '+esc((a.payload||{}).name||'');
+  const nf=(a.payload && a.payload.files)?a.payload.files.length:0;
+  return nf>1 ? `${esc(a.action)} · ${nf} files` : esc(a.action);
+}
 
 async function loadApprovals(){
   let engaged=false;
@@ -632,13 +656,11 @@ async function loadApprovals(){
   $('#apprList').innerHTML = items.map(a=>{
     const cost = a.estimated_external_cost_usd>0 ? ' · ~$'+Number(a.estimated_external_cost_usd).toFixed(2) : '';
     const aff = (a.affected||[]).join(', ');
-    const nf = (a.payload && a.payload.files) ? a.payload.files.length : 0;
-    const title = nf>1 ? `${esc(a.action)} · ${nf} files` : esc(a.action);
-    return `<div class="appr"><h4>${title}</h4>`
+    return `<div class="appr"><h4>${approvalTitle(a)}</h4>`
       + `<div class="meta">${esc(a.reason||'')}</div>`
       + (aff?`<div class="meta">Affects: ${esc(aff)}</div>`:'')
       + (a.consequences?`<div class="meta">${esc(a.consequences)}</div>`:'')
-      + filesBlock(a)
+      + payloadBlock(a)
       + `<div class="meta">from ${esc(a.requester||'')}${cost}</div>`
       + `<div class="acts"><button class="btn-resume" data-id="${a.id}" data-dec="approved">Approve</button>`
       + `<button class="ghost danger" data-id="${a.id}" data-dec="denied">Deny</button></div></div>`;
@@ -649,11 +671,15 @@ async function loadApprovals(){
       const r=await api('/api/approvals/'+b.dataset.id+'/decide',{method:'POST',body:JSON.stringify({decision:b.dataset.dec})});
       const j=await r.json().catch(()=>({}));
       if(j.deploy){
-        const dep = Array.isArray(j.deploy.deployed) ? j.deploy.deployed.join(', ') : (j.deploy.deployed||'');
-        const svc = Array.isArray(j.deploy.services) ? j.deploy.services.join(', ') : (j.deploy.service||'');
-        note.textContent = j.deploy.ok ? ('✓ Shipped '+dep+' — '+svc+' restarted and healthy')
-                                       : ('✗ Deploy failed: '+(j.deploy.error||'unknown')+' (rolled back)');
-        note.style.color = j.deploy.ok ? '#3fb950' : '#ff7b72';
+        const d=j.deploy; let msg;
+        if(d.ok){
+          if(d.migrated) msg='✓ Applied migration '+d.migrated+' to '+d.db;
+          else if(d.provisioned) msg='✓ Provisioned '+d.provisioned+' (CT '+d.ctid+') — '+(d.url||'')+' healthy';
+          else { const dep=Array.isArray(d.deployed)?d.deployed.join(', '):(d.deployed||'');
+                 const svc=Array.isArray(d.services)?d.services.join(', '):(d.service||'');
+                 msg='✓ Shipped '+dep+' — '+svc+' restarted and healthy'; }
+        } else { msg='✗ Failed: '+(d.error||'unknown')+(d.rolled_back?' (rolled back)':''); }
+        note.textContent=msg; note.style.color=d.ok?'#3fb950':'#ff7b72';
       }
     }catch(e){}
     loadApprovals(); refreshSafety();

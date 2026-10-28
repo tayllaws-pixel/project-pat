@@ -726,7 +726,7 @@ async def approvals_decide(aid: str, request: Request, user: dict = Depends(requ
     if dec == "approved" and token and DEPLOY_URL:
         try:
             appr = _sentinel("GET", f"/approvals/{aid}")
-            if appr.get("action") == "deploy.code":
+            if appr.get("action") in ("deploy.code", "infra.migrate", "infra.provision"):
                 dr = httpx.post(f"{DEPLOY_URL}/deploy",
                                 headers={"Authorization": f"Bearer {DEPLOY_TOKEN}"},
                                 json={"approval_id": aid, "token": token}, timeout=180)
