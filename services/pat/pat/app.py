@@ -683,7 +683,16 @@ async def voice_transcribe(request: Request, user: dict = Depends(require_user))
         # normalise whatever the browser recorded to 16kHz mono wav for Whisper
         subprocess.run(["ffmpeg", "-y", "-i", src, "-ar", "16000", "-ac", "1", wav],
                        capture_output=True, timeout=60)
-        segs, _info = _get_whisper().transcribe(wav, beam_size=1, language="en")
+        # Read the wav into a float32 array ourselves and hand that to Whisper — this bypasses
+        # faster-whisper's internal PyAV decode (whose av.open kwargs differ across versions).
+        import wave as _wave
+        import numpy as _np
+        with _wave.open(wav, "rb") as w:
+            pcm = w.readframes(w.getnframes())
+        audio = _np.frombuffer(pcm, dtype=_np.int16).astype(_np.float32) / 32768.0
+        if audio.size == 0:
+            return {"text": ""}
+        segs, _info = _get_whisper().transcribe(audio, beam_size=1, language="en")
         text = "".join(s.text for s in segs).strip()
     finally:
         for p in (src, wav):
