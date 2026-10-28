@@ -68,13 +68,18 @@ def _load():
             AutoPipelineForImage2Image,
             AutoPipelineForInpainting,
             AutoPipelineForText2Image,
+            StableDiffusionXLPipeline,
         )
         kw = dict(torch_dtype=DTYPE, use_safetensors=True)
-        # Prefer the fp16 weight variant when the repo ships it (SDXL base does).
-        try:
-            t2i = AutoPipelineForText2Image.from_pretrained(MODEL_ID, variant="fp16", **kw)
-        except Exception:
-            t2i = AutoPipelineForText2Image.from_pretrained(MODEL_ID, **kw)
+        if MODEL_ID.endswith(".safetensors") and os.path.exists(MODEL_ID):
+            # A single-file SDXL finetune checkpoint (the kind used in ComfyUI/Automatic1111).
+            t2i = StableDiffusionXLPipeline.from_single_file(MODEL_ID, torch_dtype=DTYPE, use_safetensors=True)
+        else:
+            # A HuggingFace diffusers repo id. Prefer the fp16 weight variant when it ships one.
+            try:
+                t2i = AutoPipelineForText2Image.from_pretrained(MODEL_ID, variant="fp16", **kw)
+            except Exception:
+                t2i = AutoPipelineForText2Image.from_pretrained(MODEL_ID, **kw)
         t2i.enable_model_cpu_offload()
         try:
             t2i.enable_vae_slicing()

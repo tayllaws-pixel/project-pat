@@ -476,7 +476,9 @@ async def image_edit(request: Request, user: dict = Depends(require_user)):
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="empty prompt")
-    strength = max(0.05, min(1.0, float(body.get("strength") or 0.6)))
+    mask = body.get("mask")                       # base64 PNG: white = change this area (inpaint)
+    default_strength = 0.9 if mask else 0.6       # inpaint repaints the masked area more fully
+    strength = max(0.05, min(1.0, float(body.get("strength") or default_strength)))
     steps = max(1, min(60, int(body.get("steps") or 30)))
     source_image_id = None
     b64 = body.get("image")
@@ -495,9 +497,15 @@ async def image_edit(request: Request, user: dict = Depends(require_user)):
         source_image_id = sid
     if not b64:
         raise HTTPException(status_code=400, detail="no source image")
-    data, secs = _imagegen("/img2img", {"prompt": prompt, "image": b64,
-                                        "strength": strength, "steps": steps})
-    return _save_image(user["id"], data, mode="img2img", prompt=prompt, source_prompt=None,
+    if mask:
+        data, secs = _imagegen("/inpaint", {"prompt": prompt, "image": b64, "mask": mask,
+                                            "strength": strength, "steps": steps})
+        mode = "inpaint"
+    else:
+        data, secs = _imagegen("/img2img", {"prompt": prompt, "image": b64,
+                                            "strength": strength, "steps": steps})
+        mode = "img2img"
+    return _save_image(user["id"], data, mode=mode, prompt=prompt, source_prompt=None,
                        negative=None, seed=None, steps=steps, guidance=None, width=None, height=None,
                        gen_seconds=secs, source_image_id=source_image_id)
 

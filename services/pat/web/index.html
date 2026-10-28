@@ -119,6 +119,8 @@
   .detail-prompt{font-size:14px;line-height:1.5}
   .detail-meta{color:var(--muted);font-size:12px}
   #editPreview img{max-width:100%;max-height:220px;border-radius:9px;border:1px solid var(--line);margin-bottom:10px}
+  .paintwrap{max-width:100%;overflow:auto;border:1px solid var(--line);border-radius:10px;margin:8px 0;background:#0b0f16}
+  #paintCanvas{display:block;max-width:100%;touch-action:none;cursor:crosshair}
   /* approvals & safety */
   .badge-count{display:none;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#d9534f;color:#fff;font-size:11px;line-height:18px;text-align:center;margin-left:7px;font-weight:600}
   .estop-pill{font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line)}
@@ -250,6 +252,19 @@
         <button id="detailDel" class="ghost danger">Delete</button>
       </div>
       <div class="img-note" id="varNote"></div>
+      <button id="paintOpen" class="ghost" style="margin-top:4px">✏️ Edit a specific area (paint)</button>
+      <div id="paintPane" style="display:none;margin-top:8px">
+        <div class="img-note">Paint over what you want to change, then describe it below.</div>
+        <div class="paintwrap"><canvas id="paintCanvas"></canvas></div>
+        <div class="img-controls">
+          <label class="strength">Brush <input type="range" id="brushSize" min="10" max="90" step="2" value="38"></label>
+          <button id="paintClear" class="ghost">Clear</button>
+          <button id="paintCancel" class="ghost">Cancel</button>
+        </div>
+        <textarea id="paintPrompt" rows="2" placeholder="What should the painted area become? e.g. an orange shirt"></textarea>
+        <div class="img-controls"><button id="paintGo" class="primary">Change painted area</button></div>
+        <div class="img-note" id="paintNote"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -455,6 +470,7 @@ function openDetail(id){
   $('#detailDl').href=im.url; $('#detailDl').setAttribute('download','pat-'+id+'.png');
   $('#varPrompt').value=''; $('#varNote').textContent='';
   $('#detailDel').dataset.id=id; $('#varGo').dataset.id=id;
+  curDetailId=id; $('#paintPane').style.display='none'; $('#paintOpen').style.display='inline-block';
   $('#imgDetail').style.display='grid';
 }
 $('#detailClose').onclick=e=>{ e.preventDefault(); $('#imgDetail').style.display='none'; };
@@ -537,6 +553,63 @@ $('#estopBtn').onclick = async ()=>{
   btn.disabled=true;
   try{ await api(resuming?'/api/estop/release':'/api/estop/engage',{method:'POST',body:'{}'}); }catch(e){}
   btn.disabled=false; loadApprovals(); refreshSafety();
+};
+
+// --- paint-to-edit (inpainting) ---
+let curDetailId=null, _mask=null, _tint=null, _pimg=null, _painting=false;
+function openPaint(){
+  const im=galleryCache.find(x=>x.id===curDetailId); if(!im) return;
+  $('#paintOpen').style.display='none'; $('#paintPane').style.display='block';
+  $('#paintNote').textContent=''; $('#paintPrompt').value='';
+  const img=new Image();
+  img.onload=()=>{
+    const maxW=Math.min(560, img.naturalWidth), scale=maxW/img.naturalWidth;
+    const W=Math.max(8,Math.round(img.naturalWidth*scale)), H=Math.max(8,Math.round(img.naturalHeight*scale));
+    const c=$('#paintCanvas'); c.width=W; c.height=H; _pimg=img;
+    _mask=document.createElement('canvas'); _mask.width=W; _mask.height=H;
+    _tint=document.createElement('canvas'); _tint.width=W; _tint.height=H;
+    redrawPaint();
+  };
+  img.src=im.url;
+}
+function redrawPaint(){
+  const c=$('#paintCanvas'), ctx=c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(_pimg,0,0,c.width,c.height);
+  const tc=_tint.getContext('2d');
+  tc.clearRect(0,0,_tint.width,_tint.height); tc.drawImage(_mask,0,0);
+  tc.globalCompositeOperation='source-in'; tc.fillStyle='#4ea1ff'; tc.fillRect(0,0,_tint.width,_tint.height);
+  tc.globalCompositeOperation='source-over';
+  ctx.globalAlpha=0.55; ctx.drawImage(_tint,0,0); ctx.globalAlpha=1;
+}
+function paintPos(e){ const c=$('#paintCanvas'), r=c.getBoundingClientRect();
+  return {x:(e.clientX-r.left)*(c.width/r.width), y:(e.clientY-r.top)*(c.height/r.height)}; }
+function paintDab(x,y){ const m=_mask.getContext('2d'), b=+$('#brushSize').value;
+  m.fillStyle='#fff'; m.beginPath(); m.arc(x,y,b/2,0,Math.PI*2); m.fill(); redrawPaint(); }
+(function(){ const c=$('#paintCanvas'); if(!c) return;
+  c.addEventListener('pointerdown',e=>{e.preventDefault(); _painting=true; const p=paintPos(e); paintDab(p.x,p.y); try{c.setPointerCapture(e.pointerId);}catch(_){}} );
+  c.addEventListener('pointermove',e=>{ if(!_painting) return; e.preventDefault(); const p=paintPos(e); paintDab(p.x,p.y); });
+  c.addEventListener('pointerup',()=>{_painting=false;}); c.addEventListener('pointerleave',()=>{_painting=false;});
+})();
+$('#paintOpen').onclick=openPaint;
+$('#paintCancel').onclick=()=>{ $('#paintPane').style.display='none'; $('#paintOpen').style.display='inline-block'; };
+$('#paintClear').onclick=()=>{ if(_mask){ _mask.getContext('2d').clearRect(0,0,_mask.width,_mask.height); redrawPaint(); } };
+function exportMask(){ const e=document.createElement('canvas'); e.width=_mask.width; e.height=_mask.height;
+  const ec=e.getContext('2d'); ec.fillStyle='#000'; ec.fillRect(0,0,e.width,e.height); ec.drawImage(_mask,0,0);
+  return e.toDataURL('image/png').split(',')[1]; }
+function maskHasPaint(){ const d=_mask.getContext('2d').getImageData(0,0,_mask.width,_mask.height).data;
+  for(let i=3;i<d.length;i+=4){ if(d[i]>0) return true; } return false; }
+$('#paintGo').onclick=async()=>{
+  const p=$('#paintPrompt').value.trim();
+  if(!p){ $('#paintNote').textContent='Describe what the painted area should become.'; return; }
+  if(!_mask || !maskHasPaint()){ $('#paintNote').textContent='Paint over the area you want to change first.'; return; }
+  $('#paintGo').disabled=true; $('#paintNote').textContent='Repainting just the painted area… (~15–30s)';
+  try{
+    const r=await api('/api/images/edit',{method:'POST',body:JSON.stringify({source_id:curDetailId, prompt:p, mask:exportMask()})});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); $('#paintNote').textContent='Error: '+(e.detail||r.status); return; }
+    const meta=await r.json(); $('#paintPane').style.display='none'; $('#paintOpen').style.display='inline-block';
+    await loadGallery(); openDetail(meta.id);
+  }catch(e){ $('#paintNote').textContent='Error: '+e; }
+  finally{ $('#paintGo').disabled=false; }
 };
 
 // --- voice (local STT + TTS) ---
