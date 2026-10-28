@@ -145,7 +145,7 @@ def do_deploy(approval_id, token):
     try:
         _sentinel("POST", "/verify", {"token": token, "action": "deploy.code", "payload": payload,
                                       "executor": "deploy-controller",
-                                      "resource": ",".join(x["path"] for x in plan)})
+                                      "resource": [x["path"] for x in plan]})
     except urllib.error.HTTPError as e:
         return 403, {"ok": False, "error": f"token rejected: {e.read().decode()[:200]}"}
 

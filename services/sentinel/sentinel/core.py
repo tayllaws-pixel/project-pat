@@ -286,7 +286,7 @@ class Approvals:
         self.audit.record("sentinel", "approval.token_issued", {"aid": req.id, "nonce": claims.nonce, "exp": claims.exp})
         return f"{_b64e(body)}.{_b64e(sig)}"
 
-    def verify_and_consume(self, token: str, action: str, payload: dict, executor: str, resource: Optional[str] = None) -> ApprovalTokenClaims:
+    def verify_and_consume(self, token: str, action: str, payload: dict, executor: str, resource=None) -> ApprovalTokenClaims:
         """Executor-side check. Any failure is audited and raises; success marks the nonce used (single-use)."""
         def deny(why: str):
             self.audit.record(executor, "approval.token_rejected", {"why": why, "action": action})
@@ -305,8 +305,11 @@ class Approvals:
             deny(f"token is for action {claims.action}, not {action}")
         if claims.payload_sha256 != sha256_hex(canonical_json(payload)):
             deny("payload does not match approved payload")
-        if resource is not None and claims.scope and resource not in claims.scope:
-            deny(f"resource {resource} outside approved scope")
+        if resource is not None and claims.scope:
+            needed = resource if isinstance(resource, (list, tuple)) else [resource]
+            outside = [r for r in needed if r not in claims.scope]
+            if outside:
+                deny(f"resource(s) {', '.join(map(str, outside))} outside approved scope")
         rec = self.store.get_approval(claims.aid)
         if rec is None or rec["decision"] != ApprovalDecision.approved:
             deny("approval revoked or missing")
