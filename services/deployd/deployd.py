@@ -35,6 +35,7 @@ DEPLOY_MAP = {
     "services/pat/pat/app.py":          (102, "/opt/pat/pat/app.py",          "pat",   "http://127.0.0.1:8080/healthz"),
     "services/pat/web/index.html":      (102, "/opt/pat/web/index.html",      "pat",   "http://127.0.0.1:8080/healthz"),
     "services/forge/forge/__init__.py": (110, "/opt/forge/forge/__init__.py", "forge", "http://127.0.0.1:8050/healthz"),
+    "services/forge/forge/version.py":  (110, "/opt/forge/forge/version.py",  "forge", "http://127.0.0.1:8050/healthz"),
     "services/forge/forge/app.py":      (110, "/opt/forge/forge/app.py",      "forge", "http://127.0.0.1:8050/healthz"),
     "services/wade/wade/handlers.py":   (103, "/opt/wade/wade/handlers.py",   "wade",  "http://127.0.0.1:8060/healthz"),
     "services/wade/wade/worker.py":     (103, "/opt/wade/wade/worker.py",     "wade",  "http://127.0.0.1:8060/healthz"),
