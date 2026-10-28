@@ -441,9 +441,10 @@ def infra_provision(job: dict, ctx: dict):
             raise ValueError("model returned empty service code")
         if not appcode.endswith("\n"):
             appcode += "\n"
-        os.makedirs(os.path.join(work, name), exist_ok=True)
-        open(os.path.join(work, name, "app.py"), "w", encoding="utf-8").write(appcode)
-        summary, results = _forge_test(ctx, work, [{"path": f"{name}/app.py"}], None)
+        # Test flat at the workspace root: Forge cd's into a lone top-level dir, so a nested path
+        # (name/app.py) would be looked up in the wrong place.
+        open(os.path.join(work, "app.py"), "w", encoding="utf-8").write(appcode)
+        summary, results = _forge_test(ctx, work, [{"path": "app.py"}], None)
         b = appcode.encode()
         files = [{"path": "app.py", "content_b64": base64.b64encode(b).decode(),
                   "sha256": hashlib.sha256(b).hexdigest()}]
