@@ -99,7 +99,7 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now wade'
+systemctl enable wade; systemctl restart wade'
 
 log "7/7 verify"
 sleep 5

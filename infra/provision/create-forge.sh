@@ -81,7 +81,7 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now forge'
+systemctl enable forge; systemctl restart forge'
 
 log "6/6 verify"
 sleep 4
