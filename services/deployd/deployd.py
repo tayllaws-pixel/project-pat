@@ -440,23 +440,37 @@ def _infra_ip():
     return p.stdout.decode().split()[0] if p.returncode == 0 and p.stdout.split() else None
 
 
+def _psql(db, sql, timeout=60):
+    return _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-v", "ON_ERROR_STOP=1",
+                 "-d", db, "-c", sql], timeout=timeout)
+
+
 def _create_db_role(dbname, role, pw):
     """Create <role> + <dbname> + least-privilege grants (mirrors provision-db.sh). dbname/role are
-    validated identifiers; pw is hex. Returns (ok, err)."""
-    g = (f"CREATE ROLE {role} LOGIN PASSWORD '{pw}'; CREATE DATABASE {dbname} OWNER postgres; "
-         f"REVOKE CONNECT ON DATABASE {dbname} FROM PUBLIC; GRANT CONNECT ON DATABASE {dbname} TO {role};")
-    r = _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-v", "ON_ERROR_STOP=1",
-              "-d", "postgres", "-c", g], timeout=60)
+    validated identifiers; pw is hex. CREATE DATABASE must run outside a transaction, so each step is a
+    separate autocommit statement; on any failure we drop whatever was made. Returns (ok, err)."""
+    r = _psql("postgres", f"CREATE ROLE {role} LOGIN PASSWORD '{pw}'")
     if r.returncode != 0:
-        return False, r.stderr.decode()[:300]
+        return False, "create role: " + r.stderr.decode()[:240]
+    r = _psql("postgres", f"CREATE DATABASE {dbname} OWNER postgres")
+    if r.returncode != 0:
+        _drop_db_role(dbname, role)
+        return False, "create database: " + r.stderr.decode()[:240]
+    r = _psql("postgres", f"REVOKE CONNECT ON DATABASE {dbname} FROM PUBLIC; "
+                          f"GRANT CONNECT ON DATABASE {dbname} TO {role}")
+    if r.returncode != 0:
+        _drop_db_role(dbname, role)
+        return False, "grant connect: " + r.stderr.decode()[:240]
     d = (f"GRANT USAGE, CREATE ON SCHEMA public TO {role}; "
          f"GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO {role}; "
          f"GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}; "
          f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO {role}; "
          f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE,SELECT ON SEQUENCES TO {role};")
-    r = _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-v", "ON_ERROR_STOP=1",
-              "-d", dbname, "-c", d], timeout=60)
-    return (r.returncode == 0), (r.stderr.decode()[:300] if r.returncode else "")
+    r = _psql(dbname, d)
+    if r.returncode != 0:
+        _drop_db_role(dbname, role)
+        return False, "grants: " + r.stderr.decode()[:240]
+    return True, ""
 
 
 def _drop_db_role(dbname, role):
