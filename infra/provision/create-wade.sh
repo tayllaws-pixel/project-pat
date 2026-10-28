@@ -46,14 +46,20 @@ for _ in $(seq 1 30); do pct exec "$CTID" -- getent hosts pypi.org >/dev/null 2>
 log "4/7 resolve peers"
 INFRA_IP="$(pct exec 100 -- hostname -I | awk '{print $1}')"
 SENT_IP="$(pct exec 104 -- hostname -I | awk '{print $1}')"
+INFER_IP="$(pct exec 101 -- hostname -I | awk '{print $1}')"
+FORGE_IP="$(pct exec 110 -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
 [ -n "$INFRA_IP" ] && [ -n "$SENT_IP" ] || { echo "infra-core (100) + sentinel (104) must be running"; exit 1; }
-log "    infra-core=${INFRA_IP}  sentinel=${SENT_IP}"
+INFERENCE_URL=""; [ -n "$INFER_IP" ] && INFERENCE_URL="http://${INFER_IP}:11434"
+FORGE_URL="";     [ -n "$FORGE_IP" ] && FORGE_URL="http://${FORGE_IP}:8050"
+REPO_URL="${WADE_REPO_URL:-https://github.com/tayllaws-pixel/project-pat.git}"
+log "    infra-core=${INFRA_IP}  sentinel=${SENT_IP}  inference=${INFER_IP:-<none>}  forge=${FORGE_IP:-<none>}"
 
-log "5/7 install python + deps"
+log "5/7 install python + git + deps"
 pct exec "$CTID" -- bash -c '
   set -e; export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq python3 python3-venv ca-certificates curl >/dev/null
+  apt-get install -y -qq python3 python3-venv git ca-certificates curl >/dev/null
+  mkdir -p /var/wade/work
   test -d /opt/wade-venv || python3 -m venv /opt/wade-venv
   /opt/wade-venv/bin/pip install -q --upgrade pip
   /opt/wade-venv/bin/pip install -q fastapi "uvicorn[standard]" "psycopg[binary]" psycopg_pool httpx'
@@ -69,6 +75,12 @@ SENTINEL_URL=http://${SENT_IP}:8070
 SENTINEL_REQUESTER_TOKEN=${SENTINEL_REQUESTER_TOKEN}
 WADE_CONTROL_TOKEN=${WADE_CONTROL_TOKEN}
 WADE_ACTOR_ID=wade
+INFERENCE_URL=${INFERENCE_URL}
+FORGE_URL=${FORGE_URL}
+FORGE_TOKEN=${FORGE_TOKEN:-}
+WADE_REPO_URL=${REPO_URL}
+WADE_CODE_MODEL=${WADE_CODE_MODEL:-qwen3:8b}
+WADE_WORK_ROOT=/var/wade/work
 EOF
 chmod 600 /etc/wade.env"
 pct exec "$CTID" -- bash -c 'cat > /etc/systemd/system/wade.service <<EOF

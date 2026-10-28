@@ -14,12 +14,13 @@ from .handlers import HANDLERS
 
 class Worker:
     def __init__(self, store, *, actor_id: str, sentinel_url: str, requester_token: str,
-                 default_targets: list, poll: float = 5.0):
+                 default_targets: list, handler_ctx: dict | None = None, poll: float = 5.0):
         self.store = store
         self.actor_id = actor_id
         self.sentinel_url = sentinel_url.rstrip("/")
         self.token = requester_token
         self.default_targets = default_targets
+        self.handler_ctx = handler_ctx or {}
         self.poll = poll
         self._stop = threading.Event()
         self.last_gate = {"allowed": None, "reason": "starting"}
@@ -84,9 +85,21 @@ class Worker:
             self.store.set_attempt(jid, attempt)
             self.store.checkpoint(jid, attempt, "attempt_start")
             try:
-                result, evidence = handler(job, {"default_targets": self.default_targets})
-                self.store.checkpoint(jid, attempt, "completed", {"summary": str(result)[:400]})
-                self.store.succeed(jid, result, evidence)
+                ctx = dict(self.handler_ctx)
+                ctx["default_targets"] = self.default_targets
+                ctx["actor_id"] = self.actor_id
+                ctx["requester_token"] = self.token
+                ctx["sentinel_url"] = self.sentinel_url
+                out = handler(job, ctx)
+                if len(out) == 3:
+                    result, evidence, state = out
+                else:
+                    result, evidence, state = out[0], out[1], "succeeded"
+                self.store.checkpoint(jid, attempt, "completed", {"summary": str(result)[:400], "state": state})
+                if state == "succeeded":
+                    self.store.succeed(jid, result, evidence)
+                else:
+                    self.store.mark_result(jid, state, result, evidence, note=f"→ {state}")
                 return
             except Exception as e:
                 self.store.checkpoint(jid, attempt, "error", {"error": str(e)[:400]})

@@ -75,6 +75,17 @@ class JobStore:
                       (job_id,))
             c.commit()
 
+    def mark_result(self, job_id, state: str, result: dict, evidence: dict, note: str = ""):
+        """Record a non-failure terminal-ish state that carries a result (e.g. awaiting_approval)."""
+        finished = state in ("succeeded", "cancelled")
+        with self.pool.connection() as c:
+            c.execute("UPDATE jobs SET state=%s, result=%s, evidence=%s, updated_at=now(), locked_until=NULL, "
+                      "finished_at=CASE WHEN %s THEN now() ELSE finished_at END WHERE id=%s",
+                      (state, Jsonb(result or {}), Jsonb(evidence or {}), finished, job_id))
+            c.execute("INSERT INTO job_log (job_id, from_state, to_state, note) VALUES (%s,'running',%s,%s)",
+                      (job_id, state, (note or "")[:300]))
+            c.commit()
+
     def to_state(self, job_id, state: str, note: str, *, failure_class: Optional[str] = None,
                  last_error: Optional[str] = None):
         """Move a running job to queued (retry/halt) or needs_reassessment/failed."""

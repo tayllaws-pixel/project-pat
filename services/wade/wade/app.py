@@ -21,6 +21,12 @@ SENTINEL_URL    = os.environ.get("SENTINEL_URL", "").rstrip("/")
 REQUESTER_TOKEN = os.environ.get("SENTINEL_REQUESTER_TOKEN", "")
 CONTROL_TOKEN   = os.environ.get("WADE_CONTROL_TOKEN", "")
 ACTOR_ID        = os.environ.get("WADE_ACTOR_ID", "wade")
+INFERENCE_URL   = os.environ.get("INFERENCE_URL", "").rstrip("/")
+CODE_MODEL      = os.environ.get("WADE_CODE_MODEL", "qwen3:8b")
+FORGE_URL       = os.environ.get("FORGE_URL", "").rstrip("/")
+FORGE_TOKEN     = os.environ.get("FORGE_TOKEN", "")
+REPO_URL        = os.environ.get("WADE_REPO_URL", "")
+WORK_ROOT       = os.environ.get("WADE_WORK_ROOT", "/var/wade/work")
 try:
     DEFAULT_TARGETS = json.loads(os.environ.get("WADE_DEFAULT_TARGETS", "[]"))
 except Exception:
@@ -35,8 +41,13 @@ worker: Worker
 def _startup():
     global worker
     store.open()
+    os.makedirs(WORK_ROOT, exist_ok=True)
+    handler_ctx = {"inference_url": INFERENCE_URL, "code_model": CODE_MODEL,
+                   "forge_url": FORGE_URL, "forge_token": FORGE_TOKEN,
+                   "repo_url": REPO_URL, "work_root": WORK_ROOT}
     worker = Worker(store, actor_id=ACTOR_ID, sentinel_url=SENTINEL_URL,
-                    requester_token=REQUESTER_TOKEN, default_targets=DEFAULT_TARGETS)
+                    requester_token=REQUESTER_TOKEN, default_targets=DEFAULT_TARGETS,
+                    handler_ctx=handler_ctx)
     threading.Thread(target=worker.run_forever, daemon=True).start()
 
 
