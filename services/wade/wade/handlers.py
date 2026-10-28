@@ -397,7 +397,7 @@ def infra_migrate(job: dict, ctx: dict):
             sql += "\n"
         b = sql.encode()
         body = {"requester": {"kind": "supervisor", "id": ctx.get("actor_id", "wade")},
-                "action": "infra.migrate", "reason": instruction, "affected": [f"db:{db}/{name}"],
+                "action": "infra.migrate", "reason": instruction, "affected": [name],
                 "consequences": f"Applies migration {name} to the {db} database.",
                 "validation_evidence": ["generated SQL — review it before approving"],
                 "rollback": "The migration runs in one transaction; any error rolls it back automatically.",
@@ -450,7 +450,7 @@ def infra_provision(job: dict, ctx: dict):
                   "sha256": hashlib.sha256(b).hexdigest()}]
         exec_start = f"/opt/{name}-venv/bin/uvicorn app:app --host 0.0.0.0 --port {port}"
         body = {"requester": {"kind": "supervisor", "id": ctx.get("actor_id", "wade")},
-                "action": "infra.provision", "reason": instruction, "affected": [f"service:{name}"],
+                "action": "infra.provision", "reason": instruction, "affected": [name],
                 "consequences": (f"Creates container CT {ctid} ({name}) listening on port {port} — "
                                  f"unprivileged, no GPU, no credentials."),
                 "validation_evidence": [summary],
