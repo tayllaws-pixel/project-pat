@@ -54,6 +54,10 @@ DEPLOY_URL     = os.environ.get("DEPLOY_URL", "").rstrip("/")          # deploy 
 DEPLOY_TOKEN   = os.environ.get("DEPLOY_CONTROLLER_TOKEN", "")
 WADE_URL       = os.environ.get("WADE_URL", "").rstrip("/")            # Wade control API; "" disables the Wade panel
 WADE_TOKEN     = os.environ.get("WADE_CONTROL_TOKEN", "")              # Pat holds Wade's control token
+# Extra supervisors Pat can watch/command, beyond the built-in Wade. JSON list of
+# {"name","label","url","token","kind"} — kind "wade" takes plain-language instructions,
+# kind "generic" takes typed {kind,payload} jobs. Provisioned supervisors can be added here.
+SUPERVISORS_EXTRA = os.environ.get("PAT_SUPERVISORS", "")
 VOICE_DIR      = Path(os.environ.get("PAT_VOICE_DIR", "/opt/pat/voice"))    # piper voice models live here
 WHISPER_MODEL  = os.environ.get("PAT_WHISPER_MODEL", "base")                # faster-whisper model size
 PIPER_VOICE    = os.environ.get("PAT_PIPER_VOICE", "en_US-amy-medium")      # Pat's speaking voice
@@ -915,6 +919,100 @@ async def wade_create_job(request: Request, user: dict = Depends(require_user)):
         payload["files"] = body["files"]
     return _wade("POST", "/jobs", {"kind": "dev.implement", "title": instruction[:80],
                                    "payload": payload, "created_by": user["username"]})
+
+
+# ---------------------------------------------------------------- supervisors (watch + command)
+# A "supervisor" is a gated agent runtime with its own control API (/healthz, /status, /jobs).
+# Wade is the built-in one; more can be registered via PAT_SUPERVISORS. This lets the human see
+# what each supervisor is working on and hand it work directly from the Supervisors tab.
+def _supervisors() -> dict:
+    reg: dict = {}
+    if WADE_URL:
+        reg["wade"] = {"name": "wade", "label": "Wade", "url": WADE_URL, "token": WADE_TOKEN,
+                       "kind": "wade",
+                       "blurb": "Autonomous dev supervisor. Describe a change in plain language; "
+                                "Wade plans, writes, and tests it, then sends you an approval."}
+    if SUPERVISORS_EXTRA:
+        try:
+            for s in json.loads(SUPERVISORS_EXTRA):
+                name = (s.get("name") or "").strip()
+                if not name or not s.get("url"):
+                    continue
+                reg[name] = {"name": name, "label": s.get("label") or name.title(),
+                             "url": s["url"].rstrip("/"), "token": s.get("token", ""),
+                             "kind": s.get("kind") or "generic", "blurb": s.get("blurb") or ""}
+        except Exception:
+            pass
+    return reg
+
+
+def _sup_call(name: str, method: str, path: str, payload=None, timeout: float = 20):
+    sup = _supervisors().get(name)
+    if not sup:
+        raise HTTPException(status_code=404, detail="unknown supervisor")
+    try:
+        r = httpx.request(method, f"{sup['url']}{path}",
+                          headers={"Authorization": f"Bearer {sup['token']}", "Content-Type": "application/json"},
+                          json=payload, timeout=timeout)
+        r.raise_for_status()
+        return r.json() if r.content else {}
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=f"{name}: {e.response.text[:200]}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"{name} unreachable: {e}")
+
+
+@app.get("/api/supervisors")
+def supervisors_list(user: dict = Depends(require_user)):
+    out = []
+    for s in _supervisors().values():
+        online = False
+        try:
+            httpx.get(f"{s['url']}/healthz", timeout=3).raise_for_status()
+            online = True
+        except Exception:
+            online = False
+        out.append({"name": s["name"], "label": s["label"], "kind": s["kind"],
+                    "blurb": s["blurb"], "online": online})
+    return {"supervisors": out}
+
+
+@app.get("/api/supervisors/{name}/status")
+def supervisor_status(name: str, user: dict = Depends(require_user)):
+    sup = _supervisors().get(name)
+    if not sup:
+        raise HTTPException(status_code=404, detail="unknown supervisor")
+    return {"name": sup["name"], "label": sup["label"], "kind": sup["kind"],
+            "status": _sup_call(name, "GET", "/status")}
+
+
+@app.get("/api/supervisors/{name}/jobs")
+def supervisor_jobs(name: str, user: dict = Depends(require_user)):
+    return _sup_call(name, "GET", "/jobs?limit=20")
+
+
+@app.post("/api/supervisors/{name}/jobs")
+async def supervisor_create_job(name: str, request: Request, user: dict = Depends(require_user)):
+    sup = _supervisors().get(name)
+    if not sup:
+        raise HTTPException(status_code=404, detail="unknown supervisor")
+    body = await request.json()
+    if sup["kind"] == "wade":
+        instruction = (body.get("instruction") or "").strip()
+        if not instruction:
+            raise HTTPException(status_code=400, detail="describe what you want Wade to do")
+        payload = {"instruction": instruction}
+        if body.get("files"):
+            payload["files"] = body["files"]
+        job = {"kind": body.get("kind") or "dev.implement", "title": instruction[:80],
+               "payload": payload, "created_by": user["username"]}
+    else:
+        kind = (body.get("kind") or "").strip()
+        if not kind:
+            raise HTTPException(status_code=400, detail="a job 'kind' is required for this supervisor")
+        job = {"kind": kind, "title": body.get("title") or kind,
+               "payload": body.get("payload") or {}, "created_by": user["username"]}
+    return _sup_call(name, "POST", "/jobs", job)
 
 
 # ---------------------------------------------------------------- web push (PWA notifications)
