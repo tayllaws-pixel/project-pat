@@ -4,6 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Pat</title>
+<!-- Installable app (PWA): add to Home Screen for a full-screen, app-like Pat -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0e1626">
+<meta name="application-name" content="Pat">
+<meta name="mobile-web-app-capable" content="yes">
+<!-- iOS: launch standalone with its own icon + dark status bar -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pat">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
 <style>
   :root{
     --bg:#0e1117; --panel:#161b22; --panel-2:#1c2230; --line:#2a313c;
@@ -653,6 +665,14 @@ async function speak(text){
 }
 
 boot().catch(()=>showLogin());
+
+/* Register the service worker so Pat installs as an app and loads instantly.
+   Never blocks the UI; failure is silent (the app still works as a normal page). */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
 </script>
 </body>
 </html>

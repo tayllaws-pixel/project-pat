@@ -745,6 +745,38 @@ def index():
     return FileResponse(WEB_DIR / "index.html")
 
 
+# ---- PWA (installable "add to Home Screen" app) assets -----------------------
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse(
+        WEB_DIR / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
+
+
+@app.get("/sw.js")
+def service_worker():
+    # no-cache so the browser always checks for an updated service worker
+    return FileResponse(
+        WEB_DIR / "sw.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/icons/{name}")
+def icon(name: str):
+    # serve only real files directly inside web/icons (no path traversal)
+    if "/" in name or "\\" in name or name.startswith("."):
+        raise HTTPException(status_code=404, detail="not found")
+    p = (WEB_DIR / "icons" / name).resolve()
+    icons_dir = (WEB_DIR / "icons").resolve()
+    if not str(p).startswith(str(icons_dir) + os.sep) or not p.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(p, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/healthz")
 def healthz():
     try:
