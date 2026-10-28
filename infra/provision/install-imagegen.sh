@@ -37,10 +37,28 @@ echo "[install-imagegen] GPU: $($PY -c 'import torch;print(torch.cuda.get_device
 $PIP install -q diffusers transformers accelerate safetensors sentencepiece \
   fastapi "uvicorn[standard]" pillow
 
-# 3) pre-download the model into the persistent HF cache so the first user request isn't a long wait.
+# 3) get the model. A single-file .safetensors finetune (default) is downloaded from its URL; a HF repo
+#    id is pre-fetched into the HF cache. SDXL base is always cached too, because from_single_file needs
+#    its pipeline config/tokenizers.
 mkdir -p "$HF_HOME"
-echo "[install-imagegen] pre-downloading ${MODEL_ID} into ${HF_HOME} (several GB)…"
-HF_HOME="$HF_HOME" HF_HUB_DISABLE_TELEMETRY=1 IMAGEGEN_MODEL="$MODEL_ID" $PY - <<'PY'
+if [[ "$MODEL_ID" == *.safetensors ]]; then
+  if [ ! -s "$MODEL_ID" ]; then
+    echo "[install-imagegen] downloading checkpoint from ${MODEL_URL:-<MODEL_URL unset>} -> ${MODEL_ID}"
+    [ -n "${MODEL_URL:-}" ] || { echo "MODEL_URL must be set for a single-file MODEL_ID"; exit 1; }
+    mkdir -p "$(dirname "$MODEL_ID")"
+    curl -fL -o "$MODEL_ID" "$MODEL_URL"
+  fi
+  echo "[install-imagegen] caching SDXL base config (needed by from_single_file)…"
+  HF_HOME="$HF_HOME" HF_HUB_DISABLE_TELEMETRY=1 $PY - <<'PY'
+import torch
+from diffusers import AutoPipelineForText2Image
+AutoPipelineForText2Image.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0",
+    torch_dtype=torch.float16, variant="fp16", use_safetensors=True)
+print("base config cached")
+PY
+else
+  echo "[install-imagegen] pre-downloading HF repo ${MODEL_ID} into ${HF_HOME}…"
+  HF_HOME="$HF_HOME" HF_HUB_DISABLE_TELEMETRY=1 IMAGEGEN_MODEL="$MODEL_ID" $PY - <<'PY'
 import os, torch
 from diffusers import AutoPipelineForText2Image
 mid = os.environ["IMAGEGEN_MODEL"]
@@ -53,5 +71,6 @@ except Exception as e:
     AutoPipelineForText2Image.from_pretrained(mid, **kw)
     print("downloaded (default weights)")
 PY
+fi
 
 echo "[install-imagegen] done."

@@ -10,7 +10,10 @@ NAME=imagegen
 DISK_STORAGE="${DISK_STORAGE:-local-lvm}"
 TEMPL_STORAGE="${TEMPL_STORAGE:-local}"
 MEM=14336; CORES=6; DISK=80; BRIDGE=vmbr0
-MODEL_ID="${IMAGEGEN_MODEL:-stabilityai/stable-diffusion-xl-base-1.0}"
+# Default to a strong photoreal SDXL finetune (single-file checkpoint, same format as ComfyUI) — much
+# better prompt adherence than SDXL base. Override IMAGEGEN_MODEL (+ MODEL_URL for a single file) to change.
+MODEL_ID="${IMAGEGEN_MODEL:-/opt/imagegen/models/RealVisXL_V4.0.safetensors}"
+MODEL_URL="${MODEL_URL:-https://huggingface.co/SG161222/RealVisXL_V4.0/resolve/main/RealVisXL_V4.0.safetensors}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 CONF="/etc/pve/lxc/${CTID}.conf"
 log(){ printf '[create-imagegen] %s\n' "$*"; }
@@ -71,7 +74,7 @@ pct exec "$CTID" -- /usr/local/bin/nvidia-smi -L || { echo "GPU NOT visible in C
 
 log "6/8 install torch + diffusers + pre-download model (downloads several GB — be patient)"
 pct push "$CTID" "$REPO/infra/provision/install-imagegen.sh" /opt/install-imagegen.sh --perms 0755
-pct exec "$CTID" -- bash -c "IMAGEGEN_MODEL='${MODEL_ID}' HF_HOME=/opt/imagegen-cache bash /opt/install-imagegen.sh"
+pct exec "$CTID" -- bash -c "IMAGEGEN_MODEL='${MODEL_ID}' MODEL_URL='${MODEL_URL}' HF_HOME=/opt/imagegen-cache bash /opt/install-imagegen.sh"
 
 log "7/8 deploy service + systemd"
 INFER_IP="$(pct exec 101 -- hostname -I | awk '{print $1}')"
