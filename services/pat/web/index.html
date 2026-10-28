@@ -156,6 +156,7 @@
     <p>Sign in to your assistant</p>
     <input id="u" placeholder="username" autocomplete="username" autofocus>
     <input id="p" type="password" placeholder="password" autocomplete="current-password">
+    <input id="code2fa" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" style="display:none">
     <div class="err" id="loginErr"></div>
     <button type="submit">Sign in</button>
   </form>
@@ -168,7 +169,7 @@
     <button class="navbtn" id="imgBtn" style="display:none">🎨 Image studio</button>
     <button class="navbtn" id="apprBtn" style="display:none">🛡 Approvals<span id="apprBadge" class="badge-count"></span></button>
     <div class="convos" id="convos"></div>
-    <div class="side-foot"><span id="who"></span><span><a href="#" id="memBtn">Memory</a> · <a href="#" id="logout">Sign out</a></span></div>
+    <div class="side-foot"><span id="who"></span><span><a href="#" id="setBtn">Settings</a> · <a href="#" id="memBtn">Memory</a> · <a href="#" id="logout">Sign out</a></span></div>
   </aside>
   <main>
     <div class="topbar">
@@ -193,6 +194,44 @@
   <div class="modal-card">
     <div class="modal-head"><b>What Pat remembers</b><a href="#" id="memClose">✕ Close</a></div>
     <div id="memList" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="setModal" class="modal" style="display:none">
+  <div class="modal-card">
+    <div class="modal-head"><b>⚙ Settings</b><a href="#" id="setClose">✕ Close</a></div>
+    <div class="modal-body" style="padding:16px 18px">
+      <section style="margin-bottom:24px">
+        <h3 style="margin:0 0 6px">Notifications</h3>
+        <p id="pushState" style="color:var(--muted);margin:0 0 10px">Checking…</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="navbtn" id="pushEnable" style="width:auto;display:none">Enable on this device</button>
+          <button class="navbtn" id="pushTest" style="width:auto;display:none">Send test</button>
+        </div>
+        <p id="pushHint" style="color:var(--muted);font-size:13px;margin:10px 0 0"></p>
+      </section>
+      <section>
+        <h3 style="margin:0 0 6px">Two-factor authentication</h3>
+        <p id="tfState" style="color:var(--muted);margin:0 0 10px">Checking…</p>
+        <div id="tfSetup" style="display:none">
+          <div id="tfQr" style="background:#fff;width:200px;height:200px;padding:8px;border-radius:10px;margin:8px 0;box-sizing:content-box"></div>
+          <p style="font-size:13px;color:var(--muted);margin:0 0 6px">Scan with Google Authenticator or Apple Passwords, or type this key in manually:</p>
+          <code id="tfSecret" style="display:block;word-break:break-all;background:var(--panel-2);padding:8px;border-radius:8px;margin:0 0 10px"></code>
+          <input id="tfCode" inputmode="numeric" placeholder="6-digit code" style="width:160px">
+          <div class="err" id="tfErr"></div>
+        </div>
+        <div id="tfDisableBox" style="display:none;margin-top:8px">
+          <input id="tfDisCode" inputmode="numeric" placeholder="6-digit code to confirm" style="width:220px">
+          <div class="err" id="tfDisErr"></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <button class="navbtn" id="tfStart" style="width:auto;display:none">Set up 2FA</button>
+          <button class="navbtn" id="tfConfirm" style="width:auto;display:none">Confirm &amp; turn on</button>
+          <button class="navbtn" id="tfDisable" style="width:auto;display:none">Turn off 2FA</button>
+          <button class="navbtn" id="tfDisConfirm" style="width:auto;display:none">Confirm turn off</button>
+        </div>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -318,9 +357,18 @@ function showApp(){ $('#login').style.display='none'; $('#app').style.display='g
 
 $('#loginForm').onsubmit = async e => {
   e.preventDefault(); $('#loginErr').textContent='';
+  const payload = {username:$('#u').value.trim(), password:$('#p').value};
+  const code = $('#code2fa').value.trim();
+  if(code) payload.code = code;
   const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({username:$('#u').value.trim(), password:$('#p').value})});
-  if(r.ok){ await boot(); } else { $('#loginErr').textContent='Invalid username or password'; }
+    body:JSON.stringify(payload)});
+  if(r.ok){ $('#code2fa').value=''; $('#code2fa').style.display='none'; await boot(); return; }
+  let detail=''; try{ detail=(await r.json()).detail||''; }catch(_){}
+  if(detail==='2fa_required'){ $('#code2fa').style.display='block'; $('#code2fa').focus();
+    $('#loginErr').textContent='Enter the 6-digit code from your authenticator app'; }
+  else if(detail==='2fa_invalid'){ $('#code2fa').style.display='block'; $('#code2fa').focus();
+    $('#loginErr').textContent='Incorrect code — try the current one'; }
+  else { $('#loginErr').textContent='Invalid username or password'; }
 };
 $('#logout').onclick = async e => { e.preventDefault(); await fetch('/api/logout',{method:'POST'}); showLogin(); };
 
@@ -336,6 +384,11 @@ async function boot(){
   initImages();
   initSafety();
   initVoice();
+  initSettings();
+  // Deep link from a push notification (e.g. "approval needed" -> open the approvals panel)
+  if(new URLSearchParams(location.search).get('view')==='approvals'){
+    const b=$('#apprBtn'); if(b && b.style.display!=='none') b.click();
+  }
 }
 
 async function loadConvos(){
@@ -662,6 +715,98 @@ async function speak(text){
     const url=URL.createObjectURL(await r.blob());
     const a=new Audio(url); a.onended=()=>URL.revokeObjectURL(url); a.play().catch(()=>{});
   }catch(e){}
+}
+
+// --- settings: notifications (web push) + two-factor (TOTP) ---
+function isStandalone(){ return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true; }
+function urlB64ToUint8(base64){
+  const pad='='.repeat((4-base64.length%4)%4);
+  const b=(base64+pad).replace(/-/g,'+').replace(/_/g,'/');
+  const raw=atob(b), arr=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
+  return arr;
+}
+async function currentPushSub(){
+  if(!('serviceWorker' in navigator)) return null;
+  try{ const reg=await navigator.serviceWorker.ready; return await reg.pushManager.getSubscription(); }catch(_){ return null; }
+}
+async function refreshPushUI(){
+  const en=$('#pushEnable'), test=$('#pushTest');
+  let key={enabled:false};
+  try{ key=await (await api('/api/push/key')).json(); }catch(_){}
+  const supported=('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window);
+  if(!key.enabled){ $('#pushState').textContent='Push isn’t set up on the server yet.'; en.style.display='none'; test.style.display='none'; $('#pushHint').textContent=''; return; }
+  if(!supported){ $('#pushState').textContent='This browser doesn’t support notifications.'; en.style.display='none'; test.style.display='none'; return; }
+  if(/iphone|ipad|ipod/i.test(navigator.userAgent) && !isStandalone()){
+    $('#pushState').textContent='Add Pat to your Home Screen to turn on notifications.';
+    $('#pushHint').textContent='On iPhone: tap Share in Safari → Add to Home Screen, then open Pat from its icon and come back here.';
+    en.style.display='none'; test.style.display='none'; return;
+  }
+  const sub=await currentPushSub();
+  if(sub){ $('#pushState').textContent='Notifications are ON for this device.'; en.textContent='Turn off'; en.dataset.on='1'; test.style.display=''; }
+  else { $('#pushState').textContent='Notifications are off for this device.'; en.textContent='Enable on this device'; en.dataset.on=''; test.style.display='none'; }
+  en.style.display='';
+  $('#pushHint').textContent = (Notification.permission==='denied') ? 'Notifications are blocked for this site in your settings.' : '';
+}
+async function refreshTfUI(){
+  let st={enabled:false};
+  try{ st=await (await api('/api/auth/2fa/status')).json(); }catch(_){}
+  $('#tfSetup').style.display='none'; $('#tfConfirm').style.display='none'; $('#tfDisableBox').style.display='none'; $('#tfDisConfirm').style.display='none';
+  if(st.enabled){ $('#tfState').textContent='Two-factor is ON.'; $('#tfStart').style.display='none'; $('#tfDisable').style.display=''; }
+  else { $('#tfState').textContent='Off. Add a one-time code from an authenticator app for extra security.'; $('#tfStart').style.display=''; $('#tfDisable').style.display='none'; }
+}
+async function openSettings(){ $('#setModal').style.display='grid'; await refreshPushUI(); await refreshTfUI(); }
+
+let _setWired=false;
+function initSettings(){
+  if(_setWired) return; _setWired=true;
+  $('#setBtn').onclick = e=>{ e.preventDefault(); openSettings(); };
+  $('#setClose').onclick = e=>{ e.preventDefault(); $('#setModal').style.display='none'; };
+  $('#setModal').onclick = e=>{ if(e.target.id==='setModal') $('#setModal').style.display='none'; };
+  $('#pushEnable').onclick = async ()=>{
+    const b=$('#pushEnable'); b.disabled=true; $('#pushHint').textContent='';
+    try{
+      if(b.dataset.on){
+        const sub=await currentPushSub();
+        if(sub){ try{ await api('/api/push/unsubscribe',{method:'POST',body:JSON.stringify({endpoint:sub.endpoint})}); }catch(_){} await sub.unsubscribe(); }
+      } else {
+        const perm=await Notification.requestPermission();
+        if(perm!=='granted'){ $('#pushHint').textContent='Permission denied. Enable notifications for this site in Settings.'; return; }
+        const key=await (await api('/api/push/key')).json();
+        const reg=await navigator.serviceWorker.ready;
+        const sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:urlB64ToUint8(key.publicKey)});
+        await api('/api/push/subscribe',{method:'POST',body:JSON.stringify(sub.toJSON?sub.toJSON():sub)});
+      }
+    }catch(err){ $('#pushHint').textContent='Could not change notifications: '+((err&&err.message)||err); }
+    finally{ b.disabled=false; await refreshPushUI(); }
+  };
+  $('#pushTest').onclick = async ()=>{
+    const b=$('#pushTest'); b.disabled=true;
+    try{ const r=await (await api('/api/push/test',{method:'POST'})).json(); $('#pushHint').textContent = r.sent? 'Test sent — check your notifications.' : 'No active device registered to notify.'; }
+    catch(_){ $('#pushHint').textContent='Test failed.'; }
+    finally{ b.disabled=false; }
+  };
+  $('#tfStart').onclick = async ()=>{
+    try{
+      const d=await (await api('/api/auth/2fa/setup',{method:'POST'})).json();
+      $('#tfQr').innerHTML=d.qr_svg;
+      const svg=$('#tfQr svg'); if(svg){ svg.removeAttribute('width'); svg.removeAttribute('height'); svg.style.width='100%'; svg.style.height='100%'; }
+      $('#tfSecret').textContent=d.secret;
+      $('#tfSetup').style.display=''; $('#tfConfirm').style.display=''; $('#tfStart').style.display='none';
+      $('#tfErr').textContent=''; $('#tfCode').value=''; $('#tfCode').focus();
+    }catch(_){ $('#tfState').textContent='Could not start 2FA setup.'; }
+  };
+  $('#tfConfirm').onclick = async ()=>{
+    $('#tfErr').textContent='';
+    const r=await api('/api/auth/2fa/enable',{method:'POST',body:JSON.stringify({code:$('#tfCode').value.trim()})});
+    if(r.ok){ await refreshTfUI(); } else { $('#tfErr').textContent='Incorrect code — use the current 6 digits from your app.'; }
+  };
+  $('#tfDisable').onclick = ()=>{ $('#tfDisableBox').style.display=''; $('#tfDisConfirm').style.display=''; $('#tfDisErr').textContent=''; $('#tfDisCode').value=''; $('#tfDisCode').focus(); };
+  $('#tfDisConfirm').onclick = async ()=>{
+    $('#tfDisErr').textContent='';
+    const r=await api('/api/auth/2fa/disable',{method:'POST',body:JSON.stringify({code:$('#tfDisCode').value.trim()})});
+    if(r.ok){ await refreshTfUI(); } else { $('#tfDisErr').textContent='Incorrect code.'; }
+  };
 }
 
 boot().catch(()=>showLogin());

@@ -8,8 +8,10 @@ approval inbox come later. Config is entirely from environment variables.
 from __future__ import annotations
 
 import base64
+import base64
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -20,6 +22,7 @@ from pathlib import Path
 
 import httpx
 import psycopg
+import pyotp
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from psycopg.rows import dict_row
@@ -53,6 +56,14 @@ VOICE_DIR      = Path(os.environ.get("PAT_VOICE_DIR", "/opt/pat/voice"))    # pi
 WHISPER_MODEL  = os.environ.get("PAT_WHISPER_MODEL", "base")                # faster-whisper model size
 PIPER_VOICE    = os.environ.get("PAT_PIPER_VOICE", "en_US-amy-medium")      # Pat's speaking voice
 WEB_DIR      = Path(__file__).resolve().parent.parent / "web"
+# Web Push (VAPID): browser push notifications for installed PWAs (iOS 16.4+, Android, desktop).
+VAPID_PRIVATE = os.environ.get("PAT_VAPID_PRIVATE", "")   # PEM private key (generated at provision time)
+VAPID_PUBLIC  = os.environ.get("PAT_VAPID_PUBLIC", "")    # base64url uncompressed P-256 public key for the browser
+VAPID_SUB     = os.environ.get("PAT_VAPID_SUB", "mailto:pat@local")
+# Push a notification when a new approval appears in Sentinel. Seconds between polls; 0 disables.
+APPROVAL_PUSH_POLL = int(os.environ.get("PAT_APPROVAL_PUSH_POLL", "15"))
+# Refresh the session cookie when it's older than this (rolling 30-day window keeps active users signed in).
+SESSION_REFRESH_AFTER = int(os.environ.get("PAT_SESSION_REFRESH_AFTER", str(24 * 3600)))
 
 pool = ConnectionPool(DB_DSN, min_size=1, max_size=8, kwargs={"row_factory": dict_row}, open=False)
 app = FastAPI(title="Pat")
@@ -97,11 +108,68 @@ def require_user(request: Request) -> dict:
     if username != ADMIN_USER:
         raise HTTPException(status_code=401, detail="not authenticated")
     with pool.connection() as conn:
-        row = conn.execute("SELECT id, username, display_name, role FROM users WHERE username=%s",
-                           (username,)).fetchone()
+        row = conn.execute(
+            "SELECT id, username, display_name, role, totp_enabled FROM users WHERE username=%s",
+            (username,)).fetchone()
     if not row:
         raise HTTPException(status_code=401, detail="unknown user")
     return row
+
+
+# ---- session cookie: issue + rolling refresh --------------------------------
+def set_session_cookie(resp, username: str) -> None:
+    resp.set_cookie("pat_session", make_cookie(username), httponly=True, samesite="lax",
+                    max_age=SESSION_TTL, secure=False)   # secure=False: served over tailnet/LAN http
+
+
+def _cookie_issued(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        _, issued, _ = value.rsplit(".", 2)
+        return int(issued)
+    except Exception:
+        return None
+
+
+def refresh_session(request: Request, resp) -> None:
+    """Roll the 30-day cookie forward once it's older than SESSION_REFRESH_AFTER. An actively-used
+    install (it calls /api/me on every launch) stays signed in; only 30 days idle forces a re-login."""
+    raw = request.cookies.get("pat_session")
+    if read_cookie(raw) != ADMIN_USER:
+        return
+    issued = _cookie_issued(raw)
+    if issued is None or (int(time.time()) - issued) >= SESSION_REFRESH_AFTER:
+        set_session_cookie(resp, ADMIN_USER)
+
+
+# ---- TOTP (two-factor authentication) ---------------------------------------
+def _user_totp(username: str) -> dict:
+    with pool.connection() as conn:
+        row = conn.execute("SELECT totp_secret, totp_enabled FROM users WHERE username=%s",
+                           (username,)).fetchone()
+    return row or {"totp_secret": None, "totp_enabled": False}
+
+
+def _totp_ok(secret: str | None, code: str | None) -> bool:
+    if not secret or not code:
+        return False
+    try:
+        return pyotp.TOTP(secret).verify(str(code).strip().replace(" ", ""), valid_window=1)
+    except Exception:
+        return False
+
+
+def _qr_svg(data: str) -> str:
+    """Render an otpauth URI as a scalable SVG QR (no Pillow needed)."""
+    import qrcode
+    from qrcode.image.svg import SvgPathImage
+    qr = qrcode.QRCode(border=2, box_size=10)
+    qr.add_data(data)
+    qr.make(fit=True)
+    buf = io.BytesIO()
+    qr.make_image(image_factory=SvgPathImage).save(buf)
+    return buf.getvalue().decode("utf-8")
 
 
 # ---------------------------------------------------------------- lifecycle
@@ -117,7 +185,25 @@ def _startup() -> None:
             "INSERT INTO users (username, display_name, role) VALUES (%s, %s, 'admin') "
             "ON CONFLICT (username) DO NOTHING",
             (ADMIN_USER, ADMIN_USER.capitalize()))
+        # 2FA + web-push schema (idempotent, so no separate migration step is required to deploy)
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret text")
+        conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled boolean NOT NULL DEFAULT false")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+              id          bigserial PRIMARY KEY,
+              user_id     uuid NOT NULL REFERENCES users(id),
+              endpoint    text UNIQUE NOT NULL,
+              p256dh      text NOT NULL,
+              auth        text NOT NULL,
+              user_agent  text,
+              created_at  timestamptz NOT NULL DEFAULT now(),
+              last_ok     timestamptz
+            )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS push_subs_user ON push_subscriptions(user_id)")
         conn.commit()
+    # Background: notify the phone when a new approval appears in Sentinel.
+    if APPROVAL_PUSH_POLL > 0:
+        threading.Thread(target=_approval_poller, daemon=True).start()
 
 
 # ---------------------------------------------------------------- auth routes
@@ -126,11 +212,18 @@ async def login(request: Request):
     body = await request.json()
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
+    code = body.get("code") or ""
     if username != ADMIN_USER or not verify_password(password):
         raise HTTPException(status_code=401, detail="invalid credentials")
+    tf = _user_totp(username)
+    if tf.get("totp_enabled"):
+        if not code:
+            # password is correct but a 2FA code is required — the UI reveals the code field on this
+            raise HTTPException(status_code=401, detail="2fa_required")
+        if not _totp_ok(tf.get("totp_secret"), code):
+            raise HTTPException(status_code=401, detail="2fa_invalid")
     resp = JSONResponse({"ok": True, "user": username})
-    resp.set_cookie("pat_session", make_cookie(username), httponly=True, samesite="lax",
-                    max_age=SESSION_TTL, secure=False)   # secure=False: served over tailnet/LAN http for v0
+    set_session_cookie(resp, username)
     return resp
 
 
@@ -142,8 +235,56 @@ def logout():
 
 
 @app.get("/api/me")
-def me(user: dict = Depends(require_user)):
-    return {"username": user["username"], "display_name": user["display_name"], "role": user["role"]}
+def me(request: Request, user: dict = Depends(require_user)):
+    resp = JSONResponse({"username": user["username"], "display_name": user["display_name"],
+                         "role": user["role"], "totp_enabled": bool(user.get("totp_enabled"))})
+    refresh_session(request, resp)     # roll the session forward so active use never logs out
+    return resp
+
+
+# ---- two-factor management (all require an authenticated session) -----------
+@app.get("/api/auth/2fa/status")
+def twofa_status(user: dict = Depends(require_user)):
+    return {"enabled": bool(user.get("totp_enabled"))}
+
+
+@app.post("/api/auth/2fa/setup")
+def twofa_setup(user: dict = Depends(require_user)):
+    # fresh pending secret; not active until confirmed with a valid code via /enable
+    secret = pyotp.random_base32()
+    with pool.connection() as conn:
+        conn.execute("UPDATE users SET totp_secret=%s, totp_enabled=false WHERE username=%s",
+                     (secret, user["username"]))
+        conn.commit()
+    uri = pyotp.TOTP(secret).provisioning_uri(name=user["username"], issuer_name="Pat")
+    return {"secret": secret, "otpauth_uri": uri, "qr_svg": _qr_svg(uri)}
+
+
+@app.post("/api/auth/2fa/enable")
+async def twofa_enable(request: Request, user: dict = Depends(require_user)):
+    body = await request.json()
+    tf = _user_totp(user["username"])
+    if not tf.get("totp_secret"):
+        raise HTTPException(status_code=400, detail="run setup first")
+    if not _totp_ok(tf.get("totp_secret"), body.get("code")):
+        raise HTTPException(status_code=400, detail="invalid code")
+    with pool.connection() as conn:
+        conn.execute("UPDATE users SET totp_enabled=true WHERE username=%s", (user["username"],))
+        conn.commit()
+    return {"ok": True, "enabled": True}
+
+
+@app.post("/api/auth/2fa/disable")
+async def twofa_disable(request: Request, user: dict = Depends(require_user)):
+    body = await request.json()
+    tf = _user_totp(user["username"])
+    if tf.get("totp_enabled") and not _totp_ok(tf.get("totp_secret"), body.get("code")):
+        raise HTTPException(status_code=400, detail="invalid code")
+    with pool.connection() as conn:
+        conn.execute("UPDATE users SET totp_secret=NULL, totp_enabled=false WHERE username=%s",
+                     (user["username"],))
+        conn.commit()
+    return {"ok": True, "enabled": False}
 
 
 # ---------------------------------------------------------------- models
@@ -737,6 +878,136 @@ async def voice_speak(request: Request, user: dict = Depends(require_user)):
     if first:
         raise HTTPException(status_code=500, detail="no audio produced")
     return Response(content=buf.getvalue(), media_type="audio/wav")
+
+
+# ---------------------------------------------------------------- web push (PWA notifications)
+# Browser push for installed PWAs. On iOS this works only when Pat is added to the Home Screen
+# (iOS 16.4+). We store one subscription per browser/device and send via VAPID/pywebpush.
+def _push_enabled() -> bool:
+    return bool(VAPID_PRIVATE and VAPID_PUBLIC)
+
+
+def _admin_user_id():
+    try:
+        with pool.connection() as conn:
+            r = conn.execute("SELECT id FROM users WHERE username=%s", (ADMIN_USER,)).fetchone()
+        return r["id"] if r else None
+    except Exception:
+        return None
+
+
+def send_push(user_id, title: str, body: str, url: str = "/", tag: str = "pat") -> int:
+    """Send a notification to every registered device for a user. Prunes dead subscriptions."""
+    if not _push_enabled():
+        return 0
+    try:
+        from pywebpush import webpush, WebPushException
+    except Exception:
+        return 0
+    payload = json.dumps({"title": title, "body": body, "url": url, "tag": tag})
+    with pool.connection() as conn:
+        subs = conn.execute(
+            "SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id=%s",
+            (user_id,)).fetchall()
+    sent, ok_ids, dead = 0, [], []
+    for s in subs:
+        info = {"endpoint": s["endpoint"], "keys": {"p256dh": s["p256dh"], "auth": s["auth"]}}
+        try:
+            webpush(subscription_info=info, data=payload,
+                    vapid_private_key=VAPID_PRIVATE, vapid_claims={"sub": VAPID_SUB}, ttl=3600)
+            sent += 1
+            ok_ids.append(s["id"])
+        except WebPushException as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (404, 410):          # gone — the browser dropped this subscription
+                dead.append(s["id"])
+        except Exception:
+            pass
+    if ok_ids or dead:
+        with pool.connection() as conn:
+            if dead:
+                conn.execute("DELETE FROM push_subscriptions WHERE id = ANY(%s)", (dead,))
+            if ok_ids:
+                conn.execute("UPDATE push_subscriptions SET last_ok=now() WHERE id = ANY(%s)", (ok_ids,))
+            conn.commit()
+    return sent
+
+
+_seen_approvals: set = set()
+
+
+def _approval_poller():
+    """Poll Sentinel for open approvals; push a notification when a genuinely new one appears.
+    On startup, pre-existing open approvals are marked seen (no notification storm after a restart)."""
+    seeded = False
+    while True:
+        try:
+            if SENTINEL_URL and _push_enabled():
+                data = _sentinel("GET", "/approvals?status=open")
+                items = (data or {}).get("approvals") or []
+                if not seeded:
+                    for a in items:
+                        if a.get("id"):
+                            _seen_approvals.add(a["id"])
+                    seeded = True
+                else:
+                    uid = _admin_user_id()
+                    for a in items:
+                        aid = a.get("id")
+                        if not aid or aid in _seen_approvals:
+                            continue
+                        _seen_approvals.add(aid)
+                        who = a.get("requester_id") or "An agent"
+                        action = a.get("action") or "needs your approval"
+                        if uid:
+                            send_push(uid, "Pat — approval needed",
+                                      f"{who}: {action}", url="/?view=approvals", tag=f"appr-{aid}")
+        except Exception:
+            pass
+        time.sleep(max(5, APPROVAL_PUSH_POLL))
+
+
+@app.get("/api/push/key")
+def push_key(user: dict = Depends(require_user)):
+    return {"enabled": _push_enabled(), "publicKey": VAPID_PUBLIC}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: Request, user: dict = Depends(require_user)):
+    sub = await request.json()
+    endpoint = (sub or {}).get("endpoint")
+    keys = (sub or {}).get("keys") or {}
+    p256dh, auth = keys.get("p256dh"), keys.get("auth")
+    if not (endpoint and p256dh and auth):
+        raise HTTPException(status_code=400, detail="invalid subscription")
+    ua = request.headers.get("user-agent", "")[:300]
+    with pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent) "
+            "VALUES (%s,%s,%s,%s,%s) "
+            "ON CONFLICT (endpoint) DO UPDATE SET p256dh=EXCLUDED.p256dh, auth=EXCLUDED.auth, "
+            "user_agent=EXCLUDED.user_agent, user_id=EXCLUDED.user_id",
+            (user["id"], endpoint, p256dh, auth, ua))
+        conn.commit()
+    return {"ok": True}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(request: Request, user: dict = Depends(require_user)):
+    endpoint = (await request.json() or {}).get("endpoint")
+    if endpoint:
+        with pool.connection() as conn:
+            conn.execute("DELETE FROM push_subscriptions WHERE endpoint=%s AND user_id=%s",
+                         (endpoint, user["id"]))
+            conn.commit()
+    return {"ok": True}
+
+
+@app.post("/api/push/test")
+def push_test(user: dict = Depends(require_user)):
+    n = send_push(user["id"], "Pat", "Notifications are working — this is a test from Pat.",
+                  url="/", tag="pat-test")
+    return {"ok": True, "sent": n}
 
 
 # ---------------------------------------------------------------- static UI

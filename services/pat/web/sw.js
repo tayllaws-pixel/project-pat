@@ -10,7 +10,7 @@
  *     UI when online, and the cached shell only when the server is unreachable.
  *   - Static icons/manifest are cache-first (they rarely change; bump CACHE to refresh).
  */
-const CACHE = "pat-shell-v1";
+const CACHE = "pat-shell-v2";
 const SHELL = [
   "/",
   "/manifest.webmanifest",
@@ -68,6 +68,42 @@ self.addEventListener("fetch", (e) => {
         })
         .catch(() => cached);
       return cached || net;
+    })
+  );
+});
+
+/* ---- Push notifications ---------------------------------------------------
+ * The server sends {title, body, url, tag}. We show it, and on tap we focus an
+ * existing Pat window (or open one) and navigate to url (e.g. the approvals view). */
+self.addEventListener("push", (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (_) { d = { body: e.data ? e.data.text() : "" }; }
+  const title = d.title || "Pat";
+  e.waitUntil(
+    self.registration.showNotification(title, {
+      body: d.body || "",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      tag: d.tag || "pat",
+      renotify: true,
+      data: { url: d.url || "/" },
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const target = (e.notification.data && e.notification.data.url) || "/";
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+      for (const c of cs) {
+        if ("focus" in c) {
+          c.focus();
+          if (c.navigate && target !== "/") { try { c.navigate(target); } catch (_) {} }
+          return;
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
     })
   );
 });
