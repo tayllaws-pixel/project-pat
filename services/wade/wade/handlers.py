@@ -146,6 +146,20 @@ _PLAN_SYS = ("You are planning a code change. Given the instruction and the cont
              "JSON array — no prose, no code fences.")
 
 
+def _coerce_plan(plan):
+    """Normalise the planner's JSON to a list of items. The model sometimes wraps the array in an
+    object ({"plan": [...]}, {"files": [...]}) or returns a single object — accept all of these."""
+    if isinstance(plan, list):
+        return plan
+    if isinstance(plan, dict):
+        for v in plan.values():
+            if isinstance(v, list):
+                return v
+        if plan.get("path"):
+            return [plan]
+    return []
+
+
 def _plan_files(ctx, instruction: str, work: str, manifest: list[str]) -> list[dict]:
     manifest_set = set(manifest)
     tree = "\n".join(manifest)
@@ -169,11 +183,14 @@ def _plan_files(ctx, instruction: str, work: str, manifest: list[str]) -> list[d
         contents.append(f"# FILE: {p}\n{c}")
     ctxblock = "\n\n".join(contents) if contents else "(none read)"
     # round 2 — the plan
-    plan = _extract_json(_llm(ctx, _PLAN_SYS,
-                              f"CHANGE REQUESTED: {instruction}\n\nRELEVANT FILE CONTENTS:\n{ctxblock}\n\n"
-                              f"FILE TREE (reference):\n{tree[:8000]}\n\nOutput the JSON plan now:"))
+    try:
+        plan = _coerce_plan(_extract_json(_llm(ctx, _PLAN_SYS,
+                            f"CHANGE REQUESTED: {instruction}\n\nRELEVANT FILE CONTENTS:\n{ctxblock}\n\n"
+                            f"FILE TREE (reference):\n{tree[:8000]}\n\nOutput the JSON plan now:")))
+    except Exception:
+        plan = []
     out = []
-    for item in (plan if isinstance(plan, list) else []):
+    for item in plan:
         if not isinstance(item, dict) or not item.get("path"):
             continue
         p = item["path"]
