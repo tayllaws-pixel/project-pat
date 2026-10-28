@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import tempfile
@@ -64,6 +65,9 @@ _MIGNAME_RE = re.compile(r"^\d{4}_[a-z0-9_]+\.sql$")
 _DESTRUCTIVE = re.compile(
     r"\b(drop\s+(table|database|schema|role|user|owned|index)|truncate|delete\s+from|"
     r"alter\s+table\s+\S+\s+drop\s+(column|constraint)|grant\s+all|revoke)\b", re.I)
+# rung 7: the trusted supervisor runtime scaffold (fixed; only handlers.py is generated) + its deps.
+SUP_TEMPLATE = os.environ.get("SUP_TEMPLATE", "/opt/project-pat/services/_supervisor_template/supervisor.py")
+SUP_DEPS = ["fastapi", "uvicorn[standard]", "psycopg[binary]", "psycopg_pool", "httpx"]
 
 
 def _sentinel(method, path, payload=None, timeout=20):
@@ -149,6 +153,8 @@ def dispatch(approval_id, token):
         return do_migrate(appr, token)
     if action == "infra.provision":
         return do_provision(appr, token)
+    if action == "infra.supervisor":
+        return do_supervisor(appr, token)
     return 400, {"ok": False, "error": f"action {action!r} is not something deployd applies"}
 
 
@@ -426,6 +432,159 @@ def do_provision(appr, token):
             _pct(["stop", str(ctid)], timeout=60)
             rolled = _pct(["destroy", str(ctid)], timeout=120).returncode == 0
         return 500, {"ok": False, "error": f"provision failed: {str(e)[:300]}", "rolled_back": rolled}
+
+
+# ---------------------------------------------------------------- rung 7: supervisor/agent factory
+def _infra_ip():
+    p = _pct(["exec", str(INFRA_CT), "--", "hostname", "-I"])
+    return p.stdout.decode().split()[0] if p.returncode == 0 and p.stdout.split() else None
+
+
+def _create_db_role(dbname, role, pw):
+    """Create <role> + <dbname> + least-privilege grants (mirrors provision-db.sh). dbname/role are
+    validated identifiers; pw is hex. Returns (ok, err)."""
+    g = (f"CREATE ROLE {role} LOGIN PASSWORD '{pw}'; CREATE DATABASE {dbname} OWNER postgres; "
+         f"REVOKE CONNECT ON DATABASE {dbname} FROM PUBLIC; GRANT CONNECT ON DATABASE {dbname} TO {role};")
+    r = _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-v", "ON_ERROR_STOP=1",
+              "-d", "postgres", "-c", g], timeout=60)
+    if r.returncode != 0:
+        return False, r.stderr.decode()[:300]
+    d = (f"GRANT USAGE, CREATE ON SCHEMA public TO {role}; "
+         f"GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO {role}; "
+         f"GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO {role}; "
+         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO {role}; "
+         f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE,SELECT ON SEQUENCES TO {role};")
+    r = _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-v", "ON_ERROR_STOP=1",
+              "-d", dbname, "-c", d], timeout=60)
+    return (r.returncode == 0), (r.stderr.decode()[:300] if r.returncode else "")
+
+
+def _drop_db_role(dbname, role):
+    _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-d", "postgres",
+          "-c", f"DROP DATABASE IF EXISTS {dbname};"], timeout=60)
+    _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-d", "postgres",
+          "-c", f"DROP ROLE IF EXISTS {role};"], timeout=60)
+
+
+def do_supervisor(appr, token):
+    p = appr.get("payload") or {}
+    name = p.get("name") or ""
+    if not _NAME_RE.match(name):
+        return 400, {"ok": False, "error": "supervisor name must be a lowercase slug"}
+    try:
+        ctid = int(p.get("ctid")); cores = int(p.get("cores", 1))
+        mem = int(p.get("memory_mb", 512)); disk = int(p.get("disk_gb", 8)); port = int(p.get("port"))
+    except (TypeError, ValueError):
+        return 400, {"ok": False, "error": "ctid/cores/memory_mb/disk_gb/port must be integers"}
+    if not PROV_CTID_MIN <= ctid <= PROV_CTID_MAX:
+        return 400, {"ok": False, "error": f"ctid must be {PROV_CTID_MIN}-{PROV_CTID_MAX}"}
+    if not 1 <= cores <= PROV_CORES_MAX or not PROV_MEM_MIN <= mem <= PROV_MEM_MAX \
+            or not PROV_DISK_MIN <= disk <= PROV_DISK_MAX or not PROV_PORT_MIN <= port <= PROV_PORT_MAX:
+        return 400, {"ok": False, "error": "resource/port outside allowed caps"}
+    hb64 = p.get("handlers_b64")
+    if not hb64:
+        return 400, {"ok": False, "error": "no handlers provided"}
+    handlers = base64.b64decode(hb64)
+    if hashlib.sha256(handlers).hexdigest() != p.get("handlers_sha256"):
+        return 400, {"ok": False, "error": "handlers sha256 does not match the approved hash"}
+    if b"HANDLERS" not in handlers:
+        return 400, {"ok": False, "error": "handlers.py does not define HANDLERS"}
+    if not os.path.isfile(SUP_TEMPLATE):
+        return 500, {"ok": False, "error": "trusted supervisor scaffold not found on host"}
+    scaffold = open(SUP_TEMPLATE, "rb").read()
+    inference_url = str(p.get("inference_url", ""))[:200]
+    code_model = str(p.get("code_model", "qwen3:8b"))[:80]
+    if any(c in inference_url for c in " \n\"'") or any(c in code_model for c in " \n\"'"):
+        return 400, {"ok": False, "error": "bad inference_url/code_model"}
+    if _pct(["config", str(ctid)]).returncode == 0:
+        return 400, {"ok": False, "error": f"CT {ctid} already exists"}
+    dbname = name.replace("-", "_")
+    role = f"{dbname}_app"
+    if _pg("postgres", f"SELECT 1 FROM pg_database WHERE datname='{dbname}'").strip() == "1":
+        return 400, {"ok": False, "error": f"database {dbname} already exists"}
+
+    try:
+        _verify_token(token, "infra.supervisor", p, name)
+    except urllib.error.HTTPError as e:
+        return 403, {"ok": False, "error": f"token rejected: {e.read().decode()[:200]}"}
+
+    infra_ip = _infra_ip()
+    if not infra_ip:
+        return 500, {"ok": False, "error": "could not resolve infra-core address"}
+    templ = _find_template()
+    if not templ:
+        return 500, {"ok": False, "error": "no debian template available on host"}
+
+    created = db_created = False
+    pw, control_token = secrets.token_hex(24), secrets.token_hex(24)
+    try:
+        okd, errd = _create_db_role(dbname, role, pw)
+        if not okd:
+            return 500, {"ok": False, "error": f"database setup failed: {errd}"}
+        db_created = True
+        c = _pct(["create", str(ctid), templ, "--hostname", name, "--cores", str(cores),
+                  "--memory", str(mem), "--swap", "256", "--rootfs", f"{PROV_STORAGE}:{disk}",
+                  "--net0", "name=eth0,bridge=vmbr0,ip=dhcp,firewall=1", "--nameserver", "1.1.1.1 8.8.8.8",
+                  "--unprivileged", "1", "--features", "nesting=1", "--onboot", "1", "--start", "1",
+                  "--tags", "pat;wade-supervisor", "--description", f"wade supervisor: {name}"], timeout=180)
+        if c.returncode != 0:
+            raise RuntimeError(f"pct create failed: {c.stderr.decode()[:200]}")
+        created = True
+        for _ in range(30):
+            if _pct(["exec", str(ctid), "--", "getent", "hosts", "deb.debian.org"]).returncode == 0:
+                break
+            time.sleep(2)
+        setup = ("export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && "
+                 "apt-get install -y -qq python3 python3-venv curl ca-certificates >/dev/null && "
+                 f"python3 -m venv /opt/{name}-venv && /opt/{name}-venv/bin/pip install -q --upgrade pip && "
+                 f"/opt/{name}-venv/bin/pip install -q " + " ".join(shlex.quote(d) for d in SUP_DEPS))
+        if _pct(["exec", str(ctid), "--", "bash", "-c", setup], timeout=700).returncode != 0:
+            raise RuntimeError("runtime/deps install failed")
+        _pct(["exec", str(ctid), "--", "mkdir", "-p", f"/opt/{name}"])
+        if not _write_file(ctid, f"/opt/{name}/supervisor.py", scaffold)[0]:
+            raise RuntimeError("scaffold push failed")
+        if not _write_file(ctid, f"/opt/{name}/handlers.py", handlers)[0]:
+            raise RuntimeError("handlers push failed")
+        dsn = f"postgresql://{role}:{pw}@{infra_ip}:5432/{dbname}"
+        env = (f"SUP_DB_DSN={dsn}\nSENTINEL_URL={SENTINEL_URL}\nSENTINEL_REQUESTER_TOKEN={SENTINEL_TOKEN}\n"
+               f"SUP_ACTOR_ID={name}\nSUP_CONTROL_TOKEN={control_token}\nINFERENCE_URL={inference_url}\n"
+               f"SUP_CODE_MODEL={code_model}\n")
+        if not _write_file(ctid, f"/etc/{name}.env", env.encode())[0]:
+            raise RuntimeError("env push failed")
+        _pct(["exec", str(ctid), "--", "chmod", "600", f"/etc/{name}.env"])
+        unit = (f"[Unit]\nDescription=wade supervisor {name}\nAfter=network-online.target\n\n"
+                f"[Service]\nEnvironmentFile=/etc/{name}.env\nWorkingDirectory=/opt/{name}\n"
+                f"ExecStart=/opt/{name}-venv/bin/uvicorn supervisor:app --host 0.0.0.0 --port {port}\n"
+                f"Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n")
+        if not _write_file(ctid, f"/etc/systemd/system/{name}.service", unit.encode())[0]:
+            raise RuntimeError("unit push failed")
+        if _pct(["exec", str(ctid), "--", "bash", "-c",
+                 f"systemctl daemon-reload && systemctl enable --now {name}"], timeout=60).returncode != 0:
+            raise RuntimeError("service failed to start")
+        healthy = False
+        for _ in range(12):
+            h = _pct(["exec", str(ctid), "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                      f"http://127.0.0.1:{port}/healthz"], timeout=15)
+            if h.returncode == 0 and h.stdout.decode().strip() == "200":
+                healthy = True
+                break
+            time.sleep(2)
+        if not healthy:
+            raise RuntimeError("supervisor did not become healthy")
+        ipp = _pct(["exec", str(ctid), "--", "hostname", "-I"])
+        ip = ipp.stdout.decode().split()[0] if ipp.returncode == 0 and ipp.stdout.split() else "?"
+        return 200, {"ok": True, "supervisor": name, "ctid": ctid, "db": dbname,
+                     "url": f"http://{ip}:{port}", "approval_id": appr.get("id")}
+    except Exception as e:
+        rb_ct = rb_db = False
+        if created:
+            _pct(["stop", str(ctid)], timeout=60)
+            rb_ct = _pct(["destroy", str(ctid)], timeout=120).returncode == 0
+        if db_created:
+            _drop_db_role(dbname, role)
+            rb_db = True
+        return 500, {"ok": False, "error": f"supervisor provision failed: {str(e)[:300]}",
+                     "rolled_back_container": rb_ct, "rolled_back_db": rb_db}
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -635,11 +635,17 @@ function payloadBlock(a){
     const code = p.app_preview ? `<details class="difff"><summary style="cursor:pointer;color:var(--accent);margin-top:6px">📄 app.py (new service)</summary>${codePre(p.app_preview)}</details>`:'';
     return `<div class="meta" style="margin-top:4px">${spec}</div>${code}`;
   }
+  if(a.action==='infra.supervisor'){
+    const spec=`CT ${esc(String(p.ctid))} · ${esc(p.name||'')} · port ${esc(String(p.port))} · own DB + queue · Sentinel-gated · requester-only (can request approvals, cannot act)`;
+    const code = p.handlers_preview ? `<details class="difff"><summary style="cursor:pointer;color:var(--accent);margin-top:6px">📄 handlers.py (the agents)</summary>${codePre(p.handlers_preview)}</details>`:'';
+    return `<div class="meta" style="margin-top:4px">${spec}</div>${code}`;
+  }
   return filesBlock(a);
 }
 function approvalTitle(a){
   if(a.action==='infra.migrate') return '🗄 database migration';
   if(a.action==='infra.provision') return '📦 new service: '+esc((a.payload||{}).name||'');
+  if(a.action==='infra.supervisor') return '🤖 new supervisor: '+esc((a.payload||{}).name||'');
   const nf=(a.payload && a.payload.files)?a.payload.files.length:0;
   return nf>1 ? `${esc(a.action)} · ${nf} files` : esc(a.action);
 }
@@ -674,6 +680,7 @@ async function loadApprovals(){
         const d=j.deploy; let msg;
         if(d.ok){
           if(d.migrated) msg='✓ Applied migration '+d.migrated+' to '+d.db;
+          else if(d.supervisor) msg='✓ Created supervisor '+d.supervisor+' (CT '+d.ctid+') — '+(d.url||'')+' healthy';
           else if(d.provisioned) msg='✓ Provisioned '+d.provisioned+' (CT '+d.ctid+') — '+(d.url||'')+' healthy';
           else { const dep=Array.isArray(d.deployed)?d.deployed.join(', '):(d.deployed||'');
                  const svc=Array.isArray(d.services)?d.services.join(', '):(d.service||'');

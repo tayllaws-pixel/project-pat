@@ -726,9 +726,9 @@ async def approvals_decide(aid: str, request: Request, user: dict = Depends(requ
     if dec == "approved" and token and DEPLOY_URL:
         try:
             appr = _sentinel("GET", f"/approvals/{aid}")
-            if appr.get("action") in ("deploy.code", "infra.migrate", "infra.provision"):
-                # provisioning a container (apt + pip) can take several minutes; wait long enough
-                dtimeout = 600 if appr.get("action") == "infra.provision" else 180
+            if appr.get("action") in ("deploy.code", "infra.migrate", "infra.provision", "infra.supervisor"):
+                # building a container (apt + pip) can take several minutes; wait long enough
+                dtimeout = 600 if appr.get("action") in ("infra.provision", "infra.supervisor") else 180
                 dr = httpx.post(f"{DEPLOY_URL}/deploy",
                                 headers={"Authorization": f"Bearer {DEPLOY_TOKEN}"},
                                 json={"approval_id": aid, "token": token}, timeout=dtimeout)

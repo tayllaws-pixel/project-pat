@@ -469,9 +469,70 @@ def infra_provision(job: dict, ctx: dict):
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- rung 7: supervisor/agent factory
+_SUP_SYS = ("You are writing the AGENT HANDLERS for a new Project PAT supervisor — a Python file called "
+            "handlers.py. Output ONLY the complete handlers.py — no prose, no markdown fences. Define one or "
+            "more handler functions with the signature fn(job, ctx) -> (result_dict, evidence_dict), and a "
+            "module-level dict named HANDLERS mapping each job 'kind' (a short dotted string like "
+            "'notes.add') to its function. `job` is a dict with a 'payload' dict; `ctx` has keys "
+            "sentinel_url, requester_token, actor_id, inference_url, code_model. Handlers may compute and "
+            "read, and may call the LLM at ctx['inference_url'] with httpx, but must NOT perform privileged "
+            "actions directly. Use only the standard library plus (optionally) httpx. You MUST define HANDLERS.")
+
+
+def infra_supervisor(job: dict, ctx: dict):
+    """Generate a new supervisor's agent handlers and request an infra.supervisor approval. The trusted
+    runtime scaffold (queue + fail-closed gated worker + control API) is added by the deploy controller;
+    only these handlers are generated here."""
+    p = job.get("payload") or {}
+    name = (p.get("name") or "").strip()
+    instruction = p.get("instruction")
+    if not re.match(r"^[a-z][a-z0-9-]{1,30}$", name):
+        raise ValueError("payload.name must be a lowercase slug (a-z, 0-9, -)")
+    if not instruction:
+        raise ValueError("no instruction")
+    ctid = int(p.get("ctid", 150))
+    port = int(p.get("port", 8150))
+    work = tempfile.mkdtemp(dir=ctx.get("work_root", "/tmp"))
+    try:
+        code = _strip_fences(_llm(ctx, _SUP_SYS,
+                                  f"SUPERVISOR NAME: {name}\nWHAT ITS AGENTS SHOULD DO: {instruction}\n\n"
+                                  f"Write handlers.py now (it MUST define the HANDLERS dict):"))
+        if "HANDLERS" not in code:
+            raise ValueError("generated handlers.py does not define HANDLERS")
+        if not code.endswith("\n"):
+            code += "\n"
+        open(os.path.join(work, "handlers.py"), "w", encoding="utf-8").write(code)
+        summary, results = _forge_test(ctx, work, [{"path": "handlers.py"}], None)
+        b = code.encode()
+        body = {"requester": {"kind": "supervisor", "id": ctx.get("actor_id", "wade")},
+                "action": "infra.supervisor", "reason": instruction, "affected": [name],
+                "consequences": (f"Creates a NEW gated supervisor '{name}' (CT {ctid}, port {port}) with its "
+                                 f"own database + queue, the trusted worker scaffold, and the agents below. "
+                                 f"It can REQUEST approvals but cannot change anything without your sign-off."),
+                "validation_evidence": [summary],
+                "rollback": "If the supervisor does not come up healthy, its container and database are destroyed.",
+                "payload": {"name": name, "ctid": ctid, "cores": int(p.get("cores", 1)),
+                            "memory_mb": int(p.get("memory_mb", 512)), "disk_gb": int(p.get("disk_gb", 8)),
+                            "port": port, "inference_url": ctx.get("inference_url", ""),
+                            "code_model": p.get("code_model", ctx.get("code_model", "qwen3:8b")),
+                            "handlers_b64": base64.b64encode(b).decode(),
+                            "handlers_sha256": hashlib.sha256(b).hexdigest(),
+                            "handlers_preview": code[:4000]}}
+        ar = httpx.post(f"{ctx['sentinel_url']}/approvals",
+                        headers={"Authorization": f"Bearer {ctx['requester_token']}"}, json=body, timeout=20)
+        ar.raise_for_status()
+        aid = ar.json().get("id")
+        return ({"supervisor": name, "ctid": ctid, "port": port, "approval_id": aid},
+                {"approval_id": aid, "forge": results}, "awaiting_approval")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 HANDLERS = {
     "diagnostics.health": diagnostics_health,
     "dev.implement": dev_implement,
     "infra.migrate": infra_migrate,
     "infra.provision": infra_provision,
+    "infra.supervisor": infra_supervisor,
 }
