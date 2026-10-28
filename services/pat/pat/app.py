@@ -49,6 +49,9 @@ SENTINEL_URL   = os.environ.get("SENTINEL_URL", "").rstrip("/")        # safety 
 SENTINEL_TOKEN = os.environ.get("SENTINEL_DECIDER_TOKEN", "")          # Pat holds the decider token
 DEPLOY_URL     = os.environ.get("DEPLOY_URL", "").rstrip("/")          # deploy controller; "" = no auto-ship
 DEPLOY_TOKEN   = os.environ.get("DEPLOY_CONTROLLER_TOKEN", "")
+VOICE_DIR      = Path(os.environ.get("PAT_VOICE_DIR", "/opt/pat/voice"))    # piper voice models live here
+WHISPER_MODEL  = os.environ.get("PAT_WHISPER_MODEL", "base")                # faster-whisper model size
+PIPER_VOICE    = os.environ.get("PAT_PIPER_VOICE", "en_US-amy-medium")      # Pat's speaking voice
 WEB_DIR      = Path(__file__).resolve().parent.parent / "web"
 
 pool = ConnectionPool(DB_DSN, min_size=1, max_size=8, kwargs={"row_factory": dict_row}, open=False)
@@ -606,6 +609,106 @@ async def estop_engage(request: Request, user: dict = Depends(require_user)):
 @app.post("/api/estop/release")
 def estop_release(user: dict = Depends(require_user)):
     return _sentinel("POST", "/estop/release", {"by": user["username"]})
+
+
+# ---------------------------------------------------------------- voice (local STT + TTS)
+# Speech-to-text with faster-whisper and text-to-speech with Piper, both on CPU so they never contend
+# with the GPU. Models are loaded lazily and cached. If the libraries/models aren't installed, the voice
+# config reports disabled and the UI hides the mic — Pat keeps working as text-only.
+_whisper = None
+_whisper_lock = threading.Lock()
+_piper = None
+_piper_lock = threading.Lock()
+
+
+def _voice_ready() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+        import piper           # noqa: F401
+    except Exception:
+        return False
+    return (VOICE_DIR / f"{PIPER_VOICE}.onnx").exists()
+
+
+def _get_whisper():
+    global _whisper
+    if _whisper is None:
+        with _whisper_lock:
+            if _whisper is None:
+                from faster_whisper import WhisperModel
+                _whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+    return _whisper
+
+
+def _get_piper():
+    global _piper
+    if _piper is None:
+        with _piper_lock:
+            if _piper is None:
+                try:
+                    from piper import PiperVoice
+                except ImportError:
+                    from piper.voice import PiperVoice
+                _piper = PiperVoice.load(str(VOICE_DIR / f"{PIPER_VOICE}.onnx"))
+    return _piper
+
+
+def _plain_for_speech(text: str) -> str:
+    """Strip markdown so the voice doesn't read out asterisks and backticks."""
+    text = re.sub(r"```.*?```", " code block omitted ", text, flags=re.S)
+    text = re.sub(r"[*_`#>]+", "", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+@app.get("/api/voice/config")
+def voice_config(user: dict = Depends(require_user)):
+    return {"enabled": _voice_ready(), "voice": PIPER_VOICE}
+
+
+@app.post("/api/voice/transcribe")
+async def voice_transcribe(request: Request, user: dict = Depends(require_user)):
+    if not _voice_ready():
+        raise HTTPException(status_code=503, detail="voice is not installed")
+    import subprocess
+    import tempfile
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="no audio")
+    src = tempfile.NamedTemporaryFile(suffix=".webm", delete=False).name
+    wav = src + ".wav"
+    try:
+        with open(src, "wb") as f:
+            f.write(data)
+        # normalise whatever the browser recorded to 16kHz mono wav for Whisper
+        subprocess.run(["ffmpeg", "-y", "-i", src, "-ar", "16000", "-ac", "1", wav],
+                       capture_output=True, timeout=60)
+        segs, _info = _get_whisper().transcribe(wav, beam_size=1, language="en")
+        text = "".join(s.text for s in segs).strip()
+    finally:
+        for p in (src, wav):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+    return {"text": text}
+
+
+@app.post("/api/voice/speak")
+async def voice_speak(request: Request, user: dict = Depends(require_user)):
+    if not _voice_ready():
+        raise HTTPException(status_code=503, detail="voice is not installed")
+    import io
+    import wave
+    body = await request.json()
+    text = _plain_for_speech(body.get("text") or "")[:2000]
+    if not text:
+        raise HTTPException(status_code=400, detail="no text")
+    buf = io.BytesIO()
+    with _piper_lock:
+        with wave.open(buf, "wb") as wf:
+            _get_piper().synthesize(text, wf)
+    return Response(content=buf.getvalue(), media_type="audio/wav")
 
 
 # ---------------------------------------------------------------- static UI

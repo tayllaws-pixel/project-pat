@@ -61,6 +61,12 @@
   .composer textarea{flex:1;background:transparent;border:0;color:var(--txt);resize:none;max-height:180px;outline:none;font:inherit;padding:6px 0}
   .send{flex:none;width:38px;height:38px;border-radius:10px;border:0;background:var(--accent);color:#0b1220;font-size:18px;display:grid;place-items:center}
   .send:disabled{opacity:.4;cursor:default}
+  .mic{flex:none;width:38px;height:38px;border-radius:10px;border:1px solid var(--line);background:var(--panel-2);color:var(--txt);font-size:16px;display:grid;place-items:center}
+  .mic:hover{border-color:var(--accent-2)}
+  .mic.rec{background:#d9534f;color:#fff;border-color:#d9534f;animation:pulse 1.1s infinite}
+  @keyframes pulse{50%{opacity:.5}}
+  .spk{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:999px;padding:3px 10px;font-size:12px}
+  .spk.on{color:#3fb950;border-color:#2ea04366}
   .hint{max-width:var(--maxw);margin:8px auto 0;color:var(--muted);font-size:12px;text-align:center}
   /* login */
   .login{position:fixed;inset:0;background:var(--bg);display:grid;place-items:center;z-index:10}
@@ -155,11 +161,13 @@
       <select id="model"></select>
       <span style="color:var(--muted);font-size:13px">GPU · local</span>
       <span id="estopPill" class="estop-pill" style="display:none"></span>
+      <button id="spk" class="spk" style="display:none" title="Speak Pat's replies">🔊 Off</button>
     </div>
     <div class="thread" id="thread"><div class="empty"><div><h1>How can I help, Taylor?</h1>Ask anything — it runs on your own server.</div></div></div>
     <div class="composer">
       <div class="box">
         <textarea id="input" rows="1" placeholder="Message Pat…"></textarea>
+        <button class="mic" id="mic" title="Tap to talk" style="display:none">🎤</button>
         <button class="send" id="send" title="Send">↑</button>
       </div>
       <div class="hint">Pat runs entirely on your hardware. Responses may be imperfect.</div>
@@ -300,6 +308,7 @@ async function boot(){
   await loadConvos();
   initImages();
   initSafety();
+  initVoice();
 }
 
 async function loadConvos(){
@@ -354,6 +363,7 @@ async function sendMsg(){
     const reader = r.body.getReader(); const dec = new TextDecoder(); let acc='';
     while(true){ const {value,done} = await reader.read(); if(done) break;
       acc += dec.decode(value,{stream:true}); bubble.innerHTML=md(acc); $('#thread').scrollTop=$('#thread').scrollHeight; }
+    speak(acc);
   }catch(e){ bubble.innerHTML = md((bubble.textContent||'') + '\n\n[connection error]'); }
   finally{ bubble.classList.remove('cursor'); state.streaming=false; $('#send').disabled=false; loadConvos(); }
 }
@@ -528,6 +538,46 @@ $('#estopBtn').onclick = async ()=>{
   try{ await api(resuming?'/api/estop/release':'/api/estop/engage',{method:'POST',body:'{}'}); }catch(e){}
   btn.disabled=false; loadApprovals(); refreshSafety();
 };
+
+// --- voice (local STT + TTS) ---
+let voiceEnabled=false, speakReplies=false, mediaRec=null, chunks=[], recording=false;
+async function initVoice(){
+  try{ const c=await (await api('/api/voice/config')).json(); voiceEnabled=!!c.enabled; }
+  catch{ voiceEnabled=false; }
+  $('#mic').style.display = voiceEnabled?'grid':'none';
+  $('#spk').style.display = voiceEnabled?'inline-block':'none';
+}
+$('#spk').onclick=()=>{ speakReplies=!speakReplies; const b=$('#spk'); b.textContent=speakReplies?'🔊 On':'🔊 Off'; b.className='spk'+(speakReplies?' on':''); };
+
+$('#mic').onclick=async()=>{
+  if(recording){ if(mediaRec) mediaRec.stop(); return; }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    mediaRec=new MediaRecorder(stream); chunks=[];
+    mediaRec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+    mediaRec.onstop=async()=>{
+      stream.getTracks().forEach(t=>t.stop()); recording=false; $('#mic').classList.remove('rec');
+      const blob=new Blob(chunks,{type:'audio/webm'}); $('#mic').textContent='…';
+      try{
+        const r=await fetch('/api/voice/transcribe',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:blob});
+        const j=await r.json().catch(()=>({})); const t=(j.text||'').trim();
+        if(t){ input.value=t; sendMsg(); }
+      }catch(e){}
+      $('#mic').textContent='🎤';
+    };
+    mediaRec.start(); recording=true; $('#mic').classList.add('rec');
+  }catch(e){ $('#mic').classList.remove('rec'); recording=false; }
+};
+
+async function speak(text){
+  if(!speakReplies || !text) return;
+  try{
+    const r=await fetch('/api/voice/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    if(!r.ok) return;
+    const url=URL.createObjectURL(await r.blob());
+    const a=new Audio(url); a.onended=()=>URL.revokeObjectURL(url); a.play().catch(()=>{});
+  }catch(e){}
+}
 
 boot().catch(()=>showLogin());
 </script>
