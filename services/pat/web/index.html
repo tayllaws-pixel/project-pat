@@ -1092,12 +1092,13 @@ async function renderSup(jobsOnly){
   try{ const st=await (await api('/api/supervisors/'+supCur+'/status')).json(); label=st.label||supCur; kind=st.kind||''; }
   catch{ online=false; }
   try{ const jd=await (await api('/api/supervisors/'+supCur+'/jobs')).json(); jobs=(jd.jobs||[]).slice(0,15); }catch{}
-  const active=jobs.filter(j=>['queued','claimed','running','awaiting_approval','awaiting_validation'].includes(j.state));
-  const working = active.length
-    ? `<div style="margin:12px 0 4px"><b>Working on now</b></div>` + active.map(supJobRow).join('')
-    : `<div style="margin:12px 0 4px;color:var(--muted)">Idle — nothing in progress.</div>`;
-  const recent = jobs.length ? `<div style="margin:16px 0 4px"><b>Recent</b></div>` + jobs.map(supJobRow).join('') : '';
-  if(jobsOnly && document.getElementById('supSend')){ $('#supJobsWrap').innerHTML = working + recent; return; }
+  const working=jobs.filter(j=>['queued','claimed','running','awaiting_validation'].includes(j.state));
+  const pending=jobs.filter(j=>j.state==='awaiting_approval');
+  const done=jobs.filter(j=>!['queued','claimed','running','awaiting_validation','awaiting_approval'].includes(j.state));
+  const sec=(title,arr)=>arr.length?`<div style="margin:14px 0 4px"><b>${title}</b></div>`+arr.map(supJobRow).join(''):'';
+  const workHtml=working.length?sec('Working on now',working):`<div style="margin:12px 0 4px;color:var(--muted)">Idle — nothing in progress.</div>`;
+  const jobsHtml=workHtml + (pending.length?sec('Waiting for your approval ('+pending.length+')',pending):'') + sec('Recent',done.slice(0,8));
+  if(jobsOnly && document.getElementById('supSend')){ $('#supJobsWrap').innerHTML = jobsHtml; return; }
   const isWade = kind==='wade';
   const ph = isWade ? "Tell Wade what to build or change…" : 'Job as JSON, e.g. {"kind":"math.sum","payload":{"numbers":[1,2,3]}}';
   const head = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">`
@@ -1107,7 +1108,7 @@ async function renderSup(jobsOnly){
   const cmd = `<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px"><b>Give ${esc(label)} a command</b>`
     + `<textarea id="supCmd" rows="3" placeholder="${esc(ph)}" style="width:100%;margin-top:8px;background:var(--panel-2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:10px;resize:vertical;font:inherit"></textarea>`
     + `<div style="display:flex;gap:10px;align-items:center;margin-top:8px"><button class="navbtn" id="supSend" style="width:auto">Send</button><span id="supNote" style="font-size:13px"></span></div></div>`;
-  $('#supMain').innerHTML = head + note + `<div id="supJobsWrap">${working + recent}</div>` + cmd;
+  $('#supMain').innerHTML = head + note + `<div id="supJobsWrap">${jobsHtml}</div>` + cmd;
   $('#supSend').onclick=()=>sendSupCmd(isWade);
   $('#supCmd').addEventListener('keydown',e=>{ if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); sendSupCmd(isWade); }});
 }
