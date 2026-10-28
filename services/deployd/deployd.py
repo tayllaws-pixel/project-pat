@@ -440,9 +440,27 @@ def _infra_ip():
     return p.stdout.decode().split()[0] if p.returncode == 0 and p.stdout.split() else None
 
 
+PG_HBA_GLOB = "/etc/postgresql/*/main/pg_hba.conf"
+PROV_SUBNET = os.environ.get("PROV_SUBNET", "192.168.1.0/24")
+
+
 def _psql(db, sql, timeout=60):
     return _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-v", "ON_ERROR_STOP=1",
                  "-d", db, "-c", sql], timeout=timeout)
+
+
+def _pg_hba_allow(dbname, role):
+    """Let <role> connect to <dbname> from the LAN subnet (dbname/role are validated identifiers)."""
+    line = f"host {dbname} {role} {PROV_SUBNET} scram-sha-256"
+    cmd = (f"grep -qxF '{line}' {PG_HBA_GLOB} 2>/dev/null || echo '{line}' >> {PG_HBA_GLOB}; "
+           f"sudo -u postgres psql -tAc 'SELECT pg_reload_conf()' >/dev/null")
+    return _pct(["exec", str(INFRA_CT), "--", "bash", "-c", cmd], timeout=30).returncode == 0
+
+
+def _pg_hba_deny(dbname, role):
+    cmd = (f"sed -i '/^host {dbname} {role} /d' {PG_HBA_GLOB}; "
+           f"sudo -u postgres psql -tAc 'SELECT pg_reload_conf()' >/dev/null 2>&1 || true")
+    _pct(["exec", str(INFRA_CT), "--", "bash", "-c", cmd], timeout=30)
 
 
 def _create_db_role(dbname, role, pw):
@@ -470,10 +488,14 @@ def _create_db_role(dbname, role, pw):
     if r.returncode != 0:
         _drop_db_role(dbname, role)
         return False, "grants: " + r.stderr.decode()[:240]
+    if not _pg_hba_allow(dbname, role):
+        _drop_db_role(dbname, role)
+        return False, "pg_hba update failed"
     return True, ""
 
 
 def _drop_db_role(dbname, role):
+    _pg_hba_deny(dbname, role)
     _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-d", "postgres",
           "-c", f"DROP DATABASE IF EXISTS {dbname};"], timeout=60)
     _pct(["exec", str(INFRA_CT), "--", "sudo", "-u", "postgres", "psql", "-d", "postgres",
