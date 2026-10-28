@@ -579,6 +579,29 @@ $('#apprBtn').onclick = ()=>{ $('#apprModal').style.display='grid'; loadApproval
 $('#apprClose').onclick = e=>{ e.preventDefault(); $('#apprModal').style.display='none'; };
 $('#apprModal').onclick = e=>{ if(e.target.id==='apprModal') $('#apprModal').style.display='none'; };
 
+function renderDiff(d){
+  return esc(d).split('\n').map(l=>{
+    let c='';
+    if(l.startsWith('+')&&!l.startsWith('+++')) c='#3fb950';
+    else if(l.startsWith('-')&&!l.startsWith('---')) c='#ff7b72';
+    else if(l.startsWith('@@')) c='#6ea8fe';
+    else if(l.startsWith('+++')||l.startsWith('---')) c='var(--muted)';
+    return c?`<span style="color:${c}">${l}</span>`:l;
+  }).join('\n');
+}
+function filesBlock(a){
+  const files = (a.payload && a.payload.files) || null;
+  if(!files || !files.length) return '';
+  const pre = 'margin:6px 0 0;padding:8px 10px;background:#0d1117;border:1px solid var(--line);border-radius:8px;'
+            + 'overflow:auto;max-height:260px;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre';
+  return files.map(f=>{
+    const tag = f.is_new ? ' <span style="color:#3fb950">(new file)</span>' : '';
+    const diff = f.diff ? `<pre style="${pre}">${renderDiff(f.diff)}</pre>`
+                        : '<div class="meta">(no diff available)</div>';
+    return `<details class="difff"><summary style="cursor:pointer;color:var(--accent);margin-top:6px">📄 ${esc(f.path)}${tag}</summary>${diff}</details>`;
+  }).join('');
+}
+
 async function loadApprovals(){
   let engaged=false;
   try{ const s=await (await api('/api/safety/status')).json(); engaged = s.estop&&s.estop.engaged; }catch{}
@@ -591,10 +614,13 @@ async function loadApprovals(){
   $('#apprList').innerHTML = items.map(a=>{
     const cost = a.estimated_external_cost_usd>0 ? ' · ~$'+Number(a.estimated_external_cost_usd).toFixed(2) : '';
     const aff = (a.affected||[]).join(', ');
-    return `<div class="appr"><h4>${esc(a.action)}</h4>`
+    const nf = (a.payload && a.payload.files) ? a.payload.files.length : 0;
+    const title = nf>1 ? `${esc(a.action)} · ${nf} files` : esc(a.action);
+    return `<div class="appr"><h4>${title}</h4>`
       + `<div class="meta">${esc(a.reason||'')}</div>`
       + (aff?`<div class="meta">Affects: ${esc(aff)}</div>`:'')
       + (a.consequences?`<div class="meta">${esc(a.consequences)}</div>`:'')
+      + filesBlock(a)
       + `<div class="meta">from ${esc(a.requester||'')}${cost}</div>`
       + `<div class="acts"><button class="btn-resume" data-id="${a.id}" data-dec="approved">Approve</button>`
       + `<button class="ghost danger" data-id="${a.id}" data-dec="denied">Deny</button></div></div>`;
@@ -605,8 +631,10 @@ async function loadApprovals(){
       const r=await api('/api/approvals/'+b.dataset.id+'/decide',{method:'POST',body:JSON.stringify({decision:b.dataset.dec})});
       const j=await r.json().catch(()=>({}));
       if(j.deploy){
-        note.textContent = j.deploy.ok ? ('✓ Shipped '+(j.deploy.deployed||'')+' — '+(j.deploy.service||'')+' restarted and healthy')
-                                       : ('✗ Deploy failed: '+(j.deploy.error||'unknown')+' (change not applied)');
+        const dep = Array.isArray(j.deploy.deployed) ? j.deploy.deployed.join(', ') : (j.deploy.deployed||'');
+        const svc = Array.isArray(j.deploy.services) ? j.deploy.services.join(', ') : (j.deploy.service||'');
+        note.textContent = j.deploy.ok ? ('✓ Shipped '+dep+' — '+svc+' restarted and healthy')
+                                       : ('✗ Deploy failed: '+(j.deploy.error||'unknown')+' (rolled back)');
         note.style.color = j.deploy.ok ? '#3fb950' : '#ff7b72';
       }
     }catch(e){}

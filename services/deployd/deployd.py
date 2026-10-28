@@ -87,46 +87,106 @@ def _healthz(ctid, url, tries=6):
     return False
 
 
+def _delete_file(ctid, path):
+    return _pct(["exec", str(ctid), "--", "rm", "-f", path]).returncode == 0
+
+
+def _ensure_parent(ctid, path):
+    d = os.path.dirname(path)
+    if d:
+        _pct(["exec", str(ctid), "--", "mkdir", "-p", d])
+
+
+def _rollback(pushed):
+    """Undo each file already pushed: restore its prior bytes, or delete it if it was newly created.
+    Returns True only if every file was restored cleanly."""
+    ok = True
+    for x in pushed:
+        if x.get("backup") is None:                     # file did not exist before — remove it
+            ok = _delete_file(x["ctid"], x["cpath"]) and ok
+        else:
+            w, _ = _write_file(x["ctid"], x["cpath"], x["backup"])
+            ok = w and ok
+    return ok
+
+
 def do_deploy(approval_id, token):
     appr = _sentinel("GET", f"/approvals/{approval_id}")
     if appr.get("action") != "deploy.code":
         return 400, {"ok": False, "error": f"approval action is {appr.get('action')}, not deploy.code"}
     payload = appr.get("payload") or {}
-    target = payload.get("target_file")
-    if target not in DEPLOY_MAP:
-        return 400, {"ok": False, "error": f"target {target!r} is not a deployable file"}
-    content_b64 = payload.get("new_content_b64")
-    if not content_b64:
-        return 400, {"ok": False, "error": "approval payload carries no content to deploy"}
 
-    # verify + consume the single-use token against the EXACT approved payload
+    # Normalise to a list of files. Supports the multi-file payload (files[]) and the legacy single-file one.
+    files = payload.get("files")
+    if not files and payload.get("target_file"):
+        files = [{"path": payload["target_file"], "new_sha256": payload.get("new_sha256"),
+                  "new_content_b64": payload.get("new_content_b64")}]
+    if not files:
+        return 400, {"ok": False, "error": "approval payload carries no files to deploy"}
+
+    # Validate EVERY file before consuming the token or touching anything (fail closed, all-or-nothing).
+    plan = []
+    for f in files:
+        path = f.get("path")
+        if path not in DEPLOY_MAP:
+            return 400, {"ok": False, "error": f"target {path!r} is not a deployable file"}
+        cb64 = f.get("new_content_b64")
+        if not cb64:
+            return 400, {"ok": False, "error": f"no content for {path}"}
+        new_bytes = base64.b64decode(cb64)
+        if hashlib.sha256(new_bytes).hexdigest() != f.get("new_sha256"):
+            return 400, {"ok": False, "error": f"content sha256 does not match the approved hash for {path}"}
+        ctid, cpath, unit, health = DEPLOY_MAP[path]
+        plan.append({"path": path, "bytes": new_bytes, "ctid": ctid, "cpath": cpath,
+                     "unit": unit, "health": health, "is_new": bool(f.get("is_new"))})
+
+    # Verify + consume the single-use token against the EXACT approved payload (binds all files at once).
     try:
         _sentinel("POST", "/verify", {"token": token, "action": "deploy.code", "payload": payload,
-                                      "executor": "deploy-controller", "resource": target})
+                                      "executor": "deploy-controller",
+                                      "resource": ",".join(x["path"] for x in plan)})
     except urllib.error.HTTPError as e:
         return 403, {"ok": False, "error": f"token rejected: {e.read().decode()[:200]}"}
 
-    new_bytes = base64.b64decode(content_b64)
-    if hashlib.sha256(new_bytes).hexdigest() != payload.get("new_sha256"):
-        return 400, {"ok": False, "error": "content sha256 does not match the approved hash"}
+    # Back up every file (None => it did not exist and is being created).
+    for x in plan:
+        x["backup"] = _read_file(x["ctid"], x["cpath"])
 
-    ctid, cpath, unit, health = DEPLOY_MAP[target]
-    old = _read_file(ctid, cpath)                       # backup for rollback
-    ok, err = _write_file(ctid, cpath, new_bytes)
-    if not ok:
-        return 500, {"ok": False, "error": f"push failed: {err}"}
-    rok, rerr = _restart(ctid, unit)
-    if rok and _healthz(ctid, health):
-        return 200, {"ok": True, "deployed": target, "ctid": ctid, "service": unit, "approval_id": approval_id}
+    # Push every file; roll back everything already pushed if any push fails.
+    pushed = []
+    for x in plan:
+        if x["backup"] is None:
+            _ensure_parent(x["ctid"], x["cpath"])
+        ok, err = _write_file(x["ctid"], x["cpath"], x["bytes"])
+        if not ok:
+            _rollback(pushed)
+            return 500, {"ok": False, "error": f"push failed for {x['path']}: {err}; rolled_back=True"}
+        pushed.append(x)
 
-    # rollback
-    rolled = False
-    if old is not None:
-        _write_file(ctid, cpath, old)
+    # Restart each affected service once, then health-check each.
+    services = []
+    for x in plan:
+        key = (x["ctid"], x["unit"], x["health"])
+        if key not in services:
+            services.append(key)
+    restart_errs = []
+    for (ctid, unit, _h) in services:
+        rok, rerr = _restart(ctid, unit)
+        if not rok:
+            restart_errs.append(f"{unit}:{rerr}")
+    healthy = all(_healthz(ctid, h) for (ctid, _u, h) in services)
+
+    if not restart_errs and healthy:
+        return 200, {"ok": True, "deployed": [x["path"] for x in plan],
+                     "services": sorted({x["unit"] for x in plan}), "approval_id": approval_id}
+
+    # Any failure: roll back all files and restart the affected services.
+    rolled = _rollback(pushed)
+    for (ctid, unit, _h) in services:
         _restart(ctid, unit)
-        rolled = _healthz(ctid, health)
-    return 500, {"ok": False, "error": f"deploy unhealthy (restart_ok={rok} {rerr}); rolled_back={rolled}",
-                 "target": target}
+    return 500, {"ok": False,
+                 "error": f"deploy unhealthy (restart_errs={restart_errs} healthy={healthy}); rolled_back={rolled}",
+                 "files": [x["path"] for x in plan]}
 
 
 class Handler(BaseHTTPRequestHandler):
