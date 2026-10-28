@@ -51,7 +51,10 @@ IMAGEGEN_URL=""; [ -n "$IMAGEGEN_IP" ] && IMAGEGEN_URL="http://${IMAGEGEN_IP}:81
 # sentinel (CT 104) is optional too — gives Pat the approval inbox + e-stop when present.
 SENTINEL_IP="$(pct exec 104 -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
 SENTINEL_URL=""; [ -n "$SENTINEL_IP" ] && SENTINEL_URL="http://${SENTINEL_IP}:8070"
-log "    infra-core=${INFRA_IP}  inference=${INFER_IP}  imagegen=${IMAGEGEN_IP:-<none>}  sentinel=${SENTINEL_IP:-<none>}"
+# deploy controller runs on the host; wire it in if it's up so approving a deploy.code auto-ships.
+DEPLOY_URL=""
+if systemctl is-active --quiet deployd 2>/dev/null; then DEPLOY_URL="http://$(hostname -I | awk '{print $1}'):8040"; fi
+log "    infra-core=${INFRA_IP}  inference=${INFER_IP}  imagegen=${IMAGEGEN_IP:-<none>}  sentinel=${SENTINEL_IP:-<none>}  deployd=${DEPLOY_URL:-<none>}"
 
 log "5/7 install python + deps"
 pct exec "$CTID" -- bash -c '
@@ -79,6 +82,8 @@ IMAGEGEN_URL=${IMAGEGEN_URL}
 PAT_IMAGES_DIR=/opt/pat/images
 SENTINEL_URL=${SENTINEL_URL}
 SENTINEL_DECIDER_TOKEN=${SENTINEL_DECIDER_TOKEN:-}
+DEPLOY_URL=${DEPLOY_URL}
+DEPLOY_CONTROLLER_TOKEN=${DEPLOY_CONTROLLER_TOKEN:-}
 EOF
 chmod 600 /etc/pat.env"
 pct exec "$CTID" -- bash -c 'cat > /etc/systemd/system/pat.service <<EOF

@@ -47,6 +47,8 @@ IMAGES_DIR    = Path(os.environ.get("PAT_IMAGES_DIR", "/opt/pat/images"))
 IMG_MODEL_NAME = os.environ.get("PAT_IMAGE_MODEL", "stable-diffusion-xl")
 SENTINEL_URL   = os.environ.get("SENTINEL_URL", "").rstrip("/")        # safety plane; "" disables the inbox
 SENTINEL_TOKEN = os.environ.get("SENTINEL_DECIDER_TOKEN", "")          # Pat holds the decider token
+DEPLOY_URL     = os.environ.get("DEPLOY_URL", "").rstrip("/")          # deploy controller; "" = no auto-ship
+DEPLOY_TOKEN   = os.environ.get("DEPLOY_CONTROLLER_TOKEN", "")
 WEB_DIR      = Path(__file__).resolve().parent.parent / "web"
 
 pool = ConnectionPool(DB_DSN, min_size=1, max_size=8, kwargs={"row_factory": dict_row}, open=False)
@@ -576,8 +578,22 @@ async def approvals_decide(aid: str, request: Request, user: dict = Depends(requ
     dec = body.get("decision")
     if dec not in ("approved", "denied"):
         raise HTTPException(status_code=400, detail="decision must be 'approved' or 'denied'")
-    return _sentinel("POST", f"/approvals/{aid}/decide",
-                     {"decision": dec, "by": user["username"], "note": body.get("note", "")})
+    res = _sentinel("POST", f"/approvals/{aid}/decide",
+                    {"decision": dec, "by": user["username"], "note": body.get("note", "")})
+    # If an approved request is a code deploy and the controller is configured, ship it now.
+    token = res.get("token")
+    if dec == "approved" and token and DEPLOY_URL:
+        try:
+            appr = _sentinel("GET", f"/approvals/{aid}")
+            if appr.get("action") == "deploy.code":
+                dr = httpx.post(f"{DEPLOY_URL}/deploy",
+                                headers={"Authorization": f"Bearer {DEPLOY_TOKEN}"},
+                                json={"approval_id": aid, "token": token}, timeout=180)
+                res["deploy"] = dr.json() if dr.content else {"ok": dr.status_code == 200}
+        except Exception as e:
+            res["deploy"] = {"ok": False, "error": str(e)[:200]}
+    res.pop("token", None)   # never surface the raw token to the browser
+    return res
 
 
 @app.post("/api/estop/engage")

@@ -221,6 +221,7 @@
         <div id="safetyState">Checking…</div>
         <button id="estopBtn" class="btn-stop">STOP</button>
       </div>
+      <div id="apprNote" style="font-size:12.5px;margin-bottom:10px;min-height:14px"></div>
       <div id="apprList"></div>
     </div>
   </div>
@@ -508,8 +509,16 @@ async function loadApprovals(){
       + `<button class="ghost danger" data-id="${a.id}" data-dec="denied">Deny</button></div></div>`;
   }).join('');
   document.querySelectorAll('.appr .acts button').forEach(b=>b.onclick=async()=>{
-    b.disabled=true;
-    try{ await api('/api/approvals/'+b.dataset.id+'/decide',{method:'POST',body:JSON.stringify({decision:b.dataset.dec})}); }catch(e){}
+    b.disabled=true; const note=$('#apprNote'); note.textContent='';
+    try{
+      const r=await api('/api/approvals/'+b.dataset.id+'/decide',{method:'POST',body:JSON.stringify({decision:b.dataset.dec})});
+      const j=await r.json().catch(()=>({}));
+      if(j.deploy){
+        note.textContent = j.deploy.ok ? ('✓ Shipped '+(j.deploy.deployed||'')+' — '+(j.deploy.service||'')+' restarted and healthy')
+                                       : ('✗ Deploy failed: '+(j.deploy.error||'unknown')+' (change not applied)');
+        note.style.color = j.deploy.ok ? '#3fb950' : '#ff7b72';
+      }
+    }catch(e){}
     loadApprovals(); refreshSafety();
   });
 }

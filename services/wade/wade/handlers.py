@@ -126,11 +126,15 @@ def dev_implement(job: dict, ctx: dict):
             raise RuntimeError(f"Forge tests failed: {summary} :: {tail}")
 
         sha = hashlib.sha256(new.encode()).hexdigest()
+        new_b64 = base64.b64encode(new.encode()).decode()
+        # The content is carried in the approval payload, so the token's payload hash binds the EXACT bytes
+        # the deploy controller will write — it cannot be swapped after approval.
         body = {"requester": {"kind": "supervisor", "id": ctx.get("actor_id", "wade")},
                 "action": "deploy.code", "reason": instruction, "affected": [target],
                 "consequences": f"Replaces {target} after passing isolated tests in Forge.",
-                "validation_evidence": [summary], "rollback": "Discard the branch; the live file is unchanged.",
-                "payload": {"target_file": target, "new_sha256": sha, "base_branch": base}}
+                "validation_evidence": [summary], "rollback": "Deploy controller restores the previous file + restarts.",
+                "payload": {"target_file": target, "new_sha256": sha, "base_branch": base,
+                            "new_content_b64": new_b64}}
         ar = httpx.post(f"{ctx['sentinel_url']}/approvals",
                         headers={"Authorization": f"Bearer {ctx['requester_token']}"},
                         json=body, timeout=15)
